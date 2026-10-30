@@ -1,0 +1,639 @@
+<script>
+/* Ikon seragam: stroke 2px, ujung bulat, mengikuti warna teks (currentColor) */
+const ICON = {
+  check: '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>',
+  x: '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>',
+  alert: '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
+  up: '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>',
+  down: '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>',
+  minus: '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><line x1="5" y1="12" x2="19" y2="12"/></svg>',
+  clipboard: '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>',
+  download: '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>',
+  image: '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>'
+};
+
+const STATE = {
+  mode: 'FM', hub: '', month: '', week: '', date: '', metric: 'A1', segment: 'blended',
+  page: 'ringkasan', bottomSource: 'weekly', bottomView: 'metric', ringkasanSort: 'default'
+};
+
+const FRONTEND_CACHE = {};
+const FRONTEND_TTL = 300 * 1000;
+
+function cacheGet(key) {
+  const c = FRONTEND_CACHE[key];
+  if (!c) return null;
+  if (Date.now() - c.timestamp > FRONTEND_TTL) { delete FRONTEND_CACHE[key]; return null; }
+  return c.data;
+}
+function cacheSet(key, data) { FRONTEND_CACHE[key] = { data, timestamp: Date.now() }; }
+
+const METRICS_MAP = {
+  FM: [
+    { key: 'A1', label: '(A1) Sameday Pickup (ADO)' },
+    { key: 'A2', label: '(A2) Sameday Pickup (Seller)' },
+    { key: 'A3', label: '(A3) Pickup Aging > 48hr' },
+    { key: 'A4', label: '(A4) Bulky Compliance' },
+    { key: 'A5', label: '(A5) Stuck Parcel > 24hr' },
+    { key: 'B1', label: '(B1) Clean Floor before 00' },
+    { key: 'B2', label: '(B2) Clean Floor after 00' },
+    { key: 'B4', label: '(B3) SLA Packed to Returned' },
+    { key: 'C1', label: '(C1) Daily Active Operator' }
+  ],
+  LM: [
+    { key: 'L_A1', label: '(A1) %couriers with penalty point >= x vs target' },
+    { key: 'L_B2', label: '(B2) 2W Dedicated & Plus Ideal Daily Active' },
+    { key: 'L_C1', label: '(C1) 2W Dedicated & Plus Monthly Productivity' },
+    { key: 'L_C2', label: '(C2) 3W & 4W Dedicated Productivity' },
+    { key: 'L_C3', label: '(C3) LM Hub operator Productivity vs target' },
+    { key: 'L_D1', label: '(D1) %Sameday Delivered STD' },
+    { key: 'L_D2', label: '(D2) %NDD ECO Compliance' },
+    { key: 'L_D3', label: '(D3) % Aging D+1 Parcels Delivered (Expedite Pickup)' },
+    { key: 'L_D4', label: '(D4) % Return Rate' }
+  ]
+};
+
+let TARGET_THRESHOLD = 99.90; // diisi dari server (CONFIG.TARGET_PCT)
+/* Keamanan: escape teks sebelum masuk innerHTML / atribut onclick */
+function esc(s) { return String(s === null || s === undefined ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function ja(s) { return esc(String(s === null || s === undefined ? '' : s).replace(/\\/g, '\\\\').replace(/'/g, "\\'")); }
+let HC_CUTOFF = { FM: null, LM: null };
+
+/* ─── ISTILAH MENU: satu sumber untuk nav, judul halaman, dan pengumuman screen reader ─── */
+const PAGE_LABELS = {
+  ringkasan: 'Ringkasan',
+  harian: 'Harian per Metrik',
+  daily_regular: 'Harian Reguler',
+  daily_high: 'Harian High',
+  daily_lm: 'Harian',
+  weekly: 'Mingguan',
+  monthly: 'Bulanan Blended',
+  toplow: 'Terbaik & Terendah',
+  trendweekly: 'Tren Mingguan',
+  bottomprioritas: 'Prioritas Perbaikan',
+  perhub: 'Per Hub',
+  rekomendasihub: 'Hypercare Old',
+  rekomendasihub2: 'Hypercare',
+  checkpoint: 'Checkpoint',
+  sharing: 'Sharing Session'
+};
+function pageLabel(p) {
+  if (p === 'weekly' && STATE.mode !== 'LM') return 'Mingguan Blended';
+  return PAGE_LABELS[p] || p;
+}
+function syncMenuLabels_() {
+  document.querySelectorAll('#mainNav button[data-page]').forEach(b => { b.textContent = pageLabel(b.dataset.page); });
+}
+function announce_(msg) {
+  const el = document.getElementById('srStatus'); if (!el) return;
+  el.textContent = ''; setTimeout(() => { el.textContent = msg; }, 50);
+}
+function syncFilterToggle_() {
+  const t = document.getElementById('filterToggle'), g = document.getElementById('filterGroup');
+  if (t && g) t.setAttribute('aria-expanded', g.classList.contains('collapsed') ? 'false' : 'true');
+}
+function syncThemeButton_() {
+  const b = document.getElementById('themeToggle');
+  if (b) b.setAttribute('aria-pressed', document.body.classList.contains('dark-mode') ? 'true' : 'false');
+}
+
+function getHypercareTargetCutoff() {
+  const v = HC_CUTOFF[STATE.mode];
+  return (v !== null && !isNaN(v)) ? v : (STATE.mode === 'LM' ? 98.00 : TARGET_THRESHOLD);
+}
+
+function updateHypercareCutoffFromUI(newVal, btn) {
+  const parsed = parseFloat(newVal);
+  if (isNaN(parsed) || parsed < 0 || parsed > 100) { toast('Gagal: masukkan nilai cutoff antara 0 sampai 100.', true); return; }
+  const label = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = 'Menyimpan…'; }
+  const done = () => { if (btn) { btn.disabled = false; btn.textContent = label; } };
+  google.script.run
+    .withSuccessHandler(res => {
+      done();
+      if (!res || !res.success) { toast('Gagal menyimpan cutoff: ' + (res ? res.error : 'respons kosong'), true); return; }
+      HC_CUTOFF[STATE.mode] = res.data.cutoff;
+      Object.keys(FRONTEND_CACHE).forEach(k => { if (k.startsWith('rekomendasi_') || k.startsWith('sharing_')) delete FRONTEND_CACHE[k]; });
+      toast('Berhasil: target cutoff ' + STATE.mode + ' diubah menjadi ' + res.data.cutoff.toFixed(2) + '% (berlaku untuk semua pengguna)');
+      if (STATE.page === 'rekomendasihub2') loadHypercareV2(); else loadRekomendasiHub();
+    })
+    .withFailureHandler(e => { done(); toast('Gagal menyimpan cutoff: ' + ((e && e.message) || 'terjadi kesalahan jaringan'), true); })
+    .apiSetHypercareCutoff(STATE.mode, parsed);
+}
+
+let FILTER_OPTIONS = { hubs: [], months: [], weeks: [], dates: [] };
+let USER_ACCESS = null;
+let activeUsersInterval = null;
+
+function toggleDarkMode() {
+  document.body.classList.toggle('dark-mode');
+  localStorage.setItem('jtt07_theme', document.body.classList.contains('dark-mode') ? 'dark' : 'light');
+  syncThemeButton_();
+}
+
+if (window.matchMedia) {
+  const mq = window.matchMedia('(prefers-color-scheme: dark)');
+  const onSys = e => { if (!localStorage.getItem('jtt07_theme')) document.body.classList.toggle('dark-mode', e.matches); };
+  if (mq.addEventListener) mq.addEventListener('change', onSys);
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const savedTheme = localStorage.getItem('jtt07_theme');
+  if (savedTheme === 'dark' || (!savedTheme && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches)) document.body.classList.add('dark-mode');
+  syncThemeButton_();
+  initGreeting();
+  const last = ((window.INIT_STATE || {}).m) || localStorage.getItem('jtt07_last_mode');
+  if (last === 'FM' || last === 'LM') openDashboard(last); else loadLandingSnapshot();
+});
+
+function initGreeting() {
+  google.script.run.withSuccessHandler(res => {
+    if (!res || !res.success) return;
+    const email = res.data.email;
+    const greetingEl = document.getElementById('greetingText');
+    if (email && greetingEl) {
+      let name = email.split('@')[0].split('.')[0];
+      name = name.charAt(0).toUpperCase() + name.slice(1);
+      const hour = new Date().getHours();
+      
+      let iconSvg = '';
+      let time = '';
+      if (hour >= 4 && hour < 11) {
+        time = 'Pagi';
+        iconSvg = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>`;
+      } else if (hour >= 11 && hour < 15) {
+        time = 'Siang';
+        iconSvg = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>`;
+      } else if (hour >= 15 && hour < 18) {
+        time = 'Sore';
+        iconSvg = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 10V2"/><path d="m4.93 10.93 1.41-1.41"/><path d="M2 18h20"/><path d="M20 22H4"/><path d="m19.07 10.93-1.41-1.41"/></svg>`;
+      } else {
+        time = 'Malam';
+        iconSvg = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>`;
+      }
+
+      greetingEl.innerHTML = `<span style="display:inline-flex; align-items:center; gap:6px;">${iconSvg} Selamat ${time}, <b>${name}</b>!</span>`;
+      greetingEl.style.display = 'inline-block';
+    }
+
+    const profileEl = document.getElementById('userProfile');
+    const avatarEl = document.getElementById('userAvatar');
+    const tooltipEl = document.getElementById('userTooltip');
+    if (email && profileEl) {
+      const parts = email.split('@')[0].split('.');
+      let initial = parts[0].charAt(0) + (parts.length > 1 ? parts[1].charAt(0) : '');
+      avatarEl.textContent = initial.toUpperCase();
+      tooltipEl.textContent = email;
+      profileEl.style.display = 'flex';
+    }
+  }).apiGetUserInfo();
+}
+
+function openDashboard(mode) {
+  STATE.mode = mode || 'FM';
+  document.body.classList.remove('mode-fm', 'mode-lm');
+  document.body.classList.add(STATE.mode === 'LM' ? 'mode-lm' : 'mode-fm');
+  STATE.metric = METRICS_MAP[STATE.mode][0].key;
+  STATE.hub = ''; STATE.month = ''; STATE.week = ''; STATE.date = '';
+
+  document.getElementById('dashTitle').textContent = `Dashboard ${STATE.mode === 'LM' ? 'LM' : 'FM'} · JTT-07`;
+  document.getElementById('dashSubtitle').textContent = STATE.mode === 'LM' ? 'LM' : 'FM';
+  
+  syncMenuLabels_();
+
+  const segmentWrap = document.getElementById('segmentSelectWrapper');
+  const btnMonthly = document.getElementById('btnMonthly');
+  if (segmentWrap) segmentWrap.style.display = STATE.mode === 'LM' ? 'none' : 'flex';
+  if (btnMonthly) btnMonthly.style.display = STATE.mode === 'LM' ? 'none' : 'block';
+
+  // CONTROL VISIBILITAS SUBMENU DAILY BARU
+  const btnDailyRegular = document.getElementById('btnDailyRegular');
+  const btnDailyHigh = document.getElementById('btnDailyHigh');
+  const btnDailyLM = document.getElementById('btnDailyLM');
+
+  if (STATE.mode === 'FM') {
+    if (btnDailyRegular) btnDailyRegular.style.display = 'inline-block';
+    if (btnDailyHigh) btnDailyHigh.style.display = 'inline-block';
+    if (btnDailyLM) btnDailyLM.style.display = 'none';
+  } else {
+    if (btnDailyRegular) btnDailyRegular.style.display = 'none';
+    if (btnDailyHigh) btnDailyHigh.style.display = 'none';
+    if (btnDailyLM) btnDailyLM.style.display = 'inline-block';
+  }
+
+  const landing = document.getElementById('landingPage');
+  const dash = document.getElementById('dashboardPage');
+  if (landing) landing.classList.add('view-hidden');
+  if (dash) dash.classList.remove('view-hidden');
+  
+  showSkeletonLoading();
+  bindEvents();
+  populateMetricFilter();
+  localStorage.setItem('jtt07_last_mode', STATE.mode);
+  document.getElementById('filterGroup').classList.toggle('collapsed', window.innerWidth < 768);
+  syncFilterToggle_();
+  loadFreshness();
+  
+  try { google.script.run.apiLogAccess(); } catch(e){}
+  startActiveUsersLive(); 
+
+  delete FRONTEND_CACHE[`filter_options_${STATE.mode}`];
+  loadFilterOptions(); 
+}
+
+function showSkeletonLoading() {
+  document.getElementById('pageContent').innerHTML = `
+    <div class="summary-cards-grid">
+      <div class="skeleton-card"><div class="skeleton" style="width: 40%; height: 12px;"></div><div class="skeleton" style="width: 60%; height: 28px;"></div></div>
+      <div class="skeleton-card"><div class="skeleton" style="width: 40%; height: 12px;"></div><div class="skeleton" style="width: 60%; height: 28px;"></div></div>
+      <div class="skeleton-card"><div class="skeleton" style="width: 40%; height: 12px;"></div><div class="skeleton" style="width: 60%; height: 28px;"></div></div>
+      <div class="skeleton-card"><div class="skeleton" style="width: 40%; height: 12px;"></div><div class="skeleton" style="width: 60%; height: 28px;"></div></div>
+    </div>
+    <div class="card skeleton-container">
+      <div class="skeleton skeleton-row"></div>
+      <div class="skeleton skeleton-row"></div>
+      <div class="skeleton skeleton-row"></div>
+      <div class="skeleton skeleton-row"></div>
+      <div class="skeleton skeleton-row"></div>
+    </div>
+  `;
+}
+
+let hbRetryTimer_ = null;
+function sendHeartbeatAndLoadUsers() {
+  if (document.hidden) return;   // tab di latar belakang tidak dihitung aktif
+  google.script.run
+    .withSuccessHandler(res => {
+      if (res && res.success && res.data && Array.isArray(res.data.users)) renderActiveUsers_(res.data.users);   // daftar ikut dalam jawaban heartbeat
+      else loadActiveUsers();
+    })
+    .withFailureHandler(() => {
+      renderActiveUsersOffline_();   // jangan diam: tandai terputus, lalu coba lagi sendiri
+      if (!hbRetryTimer_) hbRetryTimer_ = setTimeout(() => { hbRetryTimer_ = null; if (activeUsersInterval) sendHeartbeatAndLoadUsers(); }, 5000);
+    })
+    .apiSendHeartbeat();
+}
+
+function renderActiveUsersOffline_() {
+  const container = document.getElementById('activeUsersContainer');
+  if (!container) return;
+  container.innerHTML = '<div class="active-badge-inline" title="Koneksi terputus, mencoba lagi…" style="opacity:.65;"><span class="active-count">Terputus</span></div>';
+  container.style.display = 'flex';
+}
+
+function loadActiveUsers() {
+  google.script.run.withSuccessHandler(res => {
+    renderActiveUsers_((res && res.success && res.data && Array.isArray(res.data.users)) ? res.data.users : []);
+  }).apiGetActiveUsers();
+}
+
+function renderActiveUsers_(users) {
+  const container = document.getElementById('activeUsersContainer');
+  if (!container) return;
+  users = users || [];
+  if (users.length === 0 && USER_ACCESS && USER_ACCESS.email) users = [USER_ACCESS.email];
+
+  const emailListHtml = users.map(email => `<div style="padding: 3px 0; border-bottom: 1px dashed rgba(255,255,255,0.1);">${esc(email)}</div>`).join('');
+
+  container.innerHTML = `
+      <div class="active-badge-inline">
+        <div class="pulse-dot"></div>
+        <span class="active-count">${users.length}</span>
+        <div class="active-tooltip">
+          <div style="font-weight:700; border-bottom:1px solid rgba(255,255,255,0.2); padding-bottom:6px; margin-bottom:6px; display:flex; align-items:center; gap:6px;">
+            <span class="pulse-dot"></span> ${users.length} Pengguna Aktif
+          </div>
+          <div style="font-size:11px; max-height:180px; overflow-y:auto; line-height:1.4;">
+            ${emailListHtml}
+          </div>
+        </div>
+      </div>
+    `;
+  container.style.display = 'flex';
+}
+
+function dashboardIsOpen_() {
+  const d = document.getElementById('dashboardPage');
+  return !!d && !d.classList.contains('view-hidden');
+}
+
+/* Mulai heartbeat hanya bila dashboard terbuka DAN tab sedang terlihat */
+function startActiveUsersLive() {
+  if (activeUsersInterval) { clearInterval(activeUsersInterval); activeUsersInterval = null; }
+  if (document.hidden) return;   // dashboard terbuka otomatis di tab latar belakang → belum dihitung
+  renderActiveUsers_([]);   // badge langsung tampil (diri sendiri), daftar lengkap menyusul dari server
+  sendHeartbeatAndLoadUsers();
+  activeUsersInterval = setInterval(sendHeartbeatAndLoadUsers, 15000);
+}
+
+/* Hentikan heartbeat; bila tidak silent, beri tahu server agar nama langsung hilang dari daftar */
+function stopActiveUsersLive(silent) {
+  const wasLive = !!activeUsersInterval;
+  if (activeUsersInterval) { clearInterval(activeUsersInterval); activeUsersInterval = null; }
+  if (!silent && wasLive) { try { google.script.run.apiLeaveActive(); } catch (e) {} }
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) stopActiveUsersLive(false);
+  else if (dashboardIsOpen_() && !activeUsersInterval) startActiveUsersLive();
+});
+window.addEventListener('pagehide', () => stopActiveUsersLive(false));
+
+function backToLanding() {
+  stopActiveUsersLive(false);   // di halaman landing tidak dihitung sebagai pengguna aktif
+  loadLandingSnapshot();
+  document.body.classList.remove('mode-fm', 'mode-lm');
+  const dash = document.getElementById('dashboardPage');
+  const landing = document.getElementById('landingPage');
+  if (dash) dash.classList.add('view-hidden');
+  if (landing) landing.classList.remove('view-hidden');
+  if (typeof playLandingIntro === 'function') playLandingIntro();
+  const back = document.querySelector(STATE.mode === 'LM' ? '.mode-card-lm' : '.mode-card-fm');
+  if (back) back.focus();
+}
+
+function populateMetricFilter() {
+  const sel = document.getElementById('metricFilter');
+  const metrics = METRICS_MAP[STATE.mode] || METRICS_MAP.FM;
+  sel.innerHTML = metrics.map(m => `<option value="${esc(m.key)}">${esc(m.label)}</option>`).join('');
+}
+
+let eventsBound = false;
+function bindEvents() {
+  if (eventsBound) return;
+  eventsBound = true;
+  
+  document.querySelectorAll('#mainNav button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('#mainNav button').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      STATE.page = btn.dataset.page;
+      announce_('Halaman ' + pageLabel(STATE.page));
+      renderPage();
+    });
+  });
+  
+  const segmentSel = document.getElementById('segmentFilter');
+  if (segmentSel) {
+    segmentSel.addEventListener('change', e => { STATE.segment = e.target.value; renderPage(); });
+  }
+  
+  document.getElementById('hubFilter').addEventListener('change', e => { STATE.hub = e.target.value; renderPage(); });
+  
+  document.getElementById('monthFilter').addEventListener('change', e => {
+    STATE.month = e.target.value; STATE.week = ''; STATE.date = '';
+    document.getElementById('weekFilter').value = ''; document.getElementById('dateFilter').value = '';
+    populateWeekFilter(); populateDateFilter(); renderPage();
+  });
+  
+  document.getElementById('weekFilter').addEventListener('change', e => {
+    STATE.week = e.target.value; STATE.date = ''; document.getElementById('dateFilter').value = '';
+    if (STATE.week && !STATE.month) {
+      const w = FILTER_OPTIONS.weeks.find(x => String(x.value) === String(STATE.week));
+      if (w && w.month) { STATE.month = w.month; document.getElementById('monthFilter').value = w.month; }
+    }
+    populateDateFilter(); renderPage();
+  });
+  
+  document.getElementById('dateFilter').addEventListener('change', e => {
+    STATE.date = e.target.value;
+    if (STATE.date) {
+      const d = FILTER_OPTIONS.dates.find(x => x.value === STATE.date);
+      if (d) {
+        if (d.month && !STATE.month) { STATE.month = d.month; document.getElementById('monthFilter').value = d.month; }
+        if (d.week && !STATE.week) { STATE.week = d.week; document.getElementById('weekFilter').value = d.week; }
+        populateWeekFilter();
+      }
+    }
+    renderPage();
+  });
+  
+  document.getElementById('metricFilter').addEventListener('change', e => {
+    STATE.metric = e.target.value;
+    if (STATE.page === 'harian' || STATE.page === 'toplow') renderPage();
+  });
+}
+
+function loadFilterOptions() {
+  const cacheKey = `filter_options_${STATE.mode}`;
+  const cached = cacheGet(cacheKey);
+  
+  if (cached) { 
+    FILTER_OPTIONS = cached; USER_ACCESS = FILTER_OPTIONS.user; 
+    renderAllFilterDropdowns(); 
+    prefetchBackgroundData();
+    return; 
+  }
+  
+  google.script.run
+    .withSuccessHandler(res => {
+      if (!res || !res.success) { showError(res ? res.error : 'Gagal memuat opsi filter.'); return; }
+      FILTER_OPTIONS = res.data; USER_ACCESS = res.data.user;
+      cacheSet(cacheKey, res.data);
+      requestAnimationFrame(() => renderAllFilterDropdowns());
+      prefetchBackgroundData();
+    })
+    .withFailureHandler(showError)
+    .apiGetFilterOptions(STATE.mode);
+}
+
+function prefetchBackgroundData() {
+  const trendKey = `weekly_trend_${STATE.mode}_${STATE.hub || 'all'}_4`;
+  if (!cacheGet(trendKey)) {
+    google.script.run.withSuccessHandler(res => {
+      if (res && res.success) cacheSet(trendKey, res.data);
+    }).apiGetWeeklyTrend(STATE.mode, STATE.hub, 4);
+  }
+}
+
+function updateNavigationPermissions() {
+  const isCLorPIC = USER_ACCESS && (USER_ACCESS.role === 'City Lead' || USER_ACCESS.role === 'PIC');
+  const btnTopLow = document.querySelector('button[data-page="toplow"]');
+  const btnPerHub = document.querySelector('button[data-page="perhub"]');
+
+  if (btnTopLow) btnTopLow.style.display = isCLorPIC ? 'inline-block' : 'none';
+  if (btnPerHub) btnPerHub.style.display = isCLorPIC ? 'inline-block' : 'none';
+  const btnHc1 = document.querySelector('button[data-page="rekomendasihub"]');
+  if (btnHc1) btnHc1.style.display = 'none';   // Hypercare v1 disembunyikan; yang tampil hanya Hypercare v2
+  const btnHc2 = document.querySelector('button[data-page="rekomendasihub2"]');
+  if (btnHc2) btnHc2.style.display = 'inline-block';   // Hypercare (v2): semua pengguna, isi dibatasi di server
+  const btnCkp = document.querySelector('button[data-page="checkpoint"]');
+  if (btnCkp) btnCkp.style.display = isCLorPIC ? 'inline-block' : 'none';
+  const btnShr = document.querySelector('button[data-page="sharing"]');
+  if (btnShr) btnShr.style.display = isCLorPIC ? 'inline-block' : 'none';
+}
+
+function renderAllFilterDropdowns() {
+  if (FILTER_OPTIONS.target) TARGET_THRESHOLD = FILTER_OPTIONS.target;
+  if (FILTER_OPTIONS.warn) WARN_THRESHOLD = FILTER_OPTIONS.warn;
+  const hubSel = document.getElementById('hubFilter');
+  hubSel.innerHTML = '';
+  
+  const isFullAccess = USER_ACCESS && (USER_ACCESS.role === 'City Lead' || USER_ACCESS.role === 'PIC' || USER_ACCESS.hubAccess.includes('Semua'));
+
+  if (isFullAccess) {
+    const o = document.createElement('option'); o.value = ''; o.textContent = 'Semua'; hubSel.appendChild(o);
+  }
+
+  const hubOptions = FILTER_OPTIONS.hubs || [];
+  hubOptions.forEach(h => { const o = document.createElement('option'); o.value = h; o.textContent = h; hubSel.appendChild(o); });
+
+  if (hubOptions.length > 0) {
+    hubSel.disabled = false; hubSel.style.pointerEvents = 'auto'; hubSel.style.background = 'transparent'; hubSel.style.opacity = '1';
+    if (!isFullAccess) { STATE.hub = hubOptions[0]; hubSel.value = STATE.hub; } 
+    else { STATE.hub = ''; hubSel.value = ''; }
+  }
+
+  const monthSel = document.getElementById('monthFilter');
+  monthSel.innerHTML = '<option value="">Semua</option>';
+  (FILTER_OPTIONS.months || []).forEach(m => { const o = document.createElement('option'); o.value = m; o.textContent = formatMonthLabel(m); monthSel.appendChild(o); });
+  
+  const weekSel = document.getElementById('weekFilter');
+  weekSel.innerHTML = '<option value="">Semua</option>';
+  (FILTER_OPTIONS.weeks || []).forEach(w => { const o = document.createElement('option'); o.value = w.value; o.textContent = w.value; weekSel.appendChild(o); });
+
+  if (!STATE.month && !STATE.week && !STATE.date && FILTER_OPTIONS.months && FILTER_OPTIONS.months.length > 0) {
+    const today = new Date();
+    const currentYear = today.getFullYear();
+    const currentMonthNum = today.getMonth() + 1;
+    const currentMonthStr = currentYear + '-' + String(currentMonthNum).padStart(2, '0');
+    
+    const shortNames = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+    const longNames  = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
+
+    let targetMonth = FILTER_OPTIONS.months.find(m => {
+      const mLower = String(m).toLowerCase().trim();
+      return mLower === currentMonthStr || mLower.includes(shortNames[currentMonthNum - 1]) || mLower.includes(longNames[currentMonthNum - 1]);
+    });
+
+    if (!targetMonth) targetMonth = FILTER_OPTIONS.months[0];
+    if (targetMonth) { STATE.month = targetMonth; monthSel.value = targetMonth; }
+  } else {
+    if (STATE.month) monthSel.value = STATE.month;
+    if (STATE.week) weekSel.value = STATE.week;
+  }
+  
+  const _wasInit = INIT_USED;
+  applyInitState();
+  initPeriodPicker(!_wasInit && INIT_USED);
+  populateWeekFilter(); populateDateFilter(); updateNavigationPermissions(); renderPage();
+}
+
+function populateWeekFilter() {
+  const sel = document.getElementById('weekFilter'); const current = STATE.week;
+  sel.innerHTML = '<option value="">Semua</option>';
+  (FILTER_OPTIONS.weeks || []).filter(w => !STATE.month || w.month === STATE.month).forEach(w => {
+    const o = document.createElement('option'); o.value = w.value; o.textContent = w.value;
+    if (w.value === current) o.selected = true; sel.appendChild(o);
+  });
+}
+
+function populateDateFilter() {
+  const sel = document.getElementById('dateFilter'); const current = STATE.date;
+  sel.innerHTML = '<option value="">Semua</option>';
+  const cleanStr = (str) => String(str || '').toLowerCase().replace(/[^a-z0-9]/g, '').trim();
+
+  const availableDates = (FILTER_OPTIONS.dates || []).filter(d => {
+    const matchMonth = !STATE.month || cleanStr(d.month) === cleanStr(STATE.month);
+    let matchWeek = true;
+    if (STATE.week) {
+      const cleanStateWeek = cleanStr(STATE.week);
+      const cleanDataWeek = cleanStr(d.week);
+      matchWeek = (cleanDataWeek === cleanStateWeek) || cleanStateWeek.includes(cleanDataWeek) || cleanDataWeek.includes(cleanStateWeek);
+    }
+    return matchMonth && matchWeek;
+  });
+
+  availableDates.sort((a, b) => String(a.value).localeCompare(String(b.value)));
+  availableDates.forEach(d => {
+    const o = document.createElement('option'); o.value = d.value; o.textContent = d.value;
+    if (d.value === current) o.selected = true; sel.appendChild(o);
+  });
+}
+
+function formatMonthLabel(m) { if (!m) return ''; const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']; const p = m.split('-'); return p.length===2 ? `${months[parseInt(p[1],10)-1]} ${p[0]}` : m; }
+let DATA_FRESH = '';
+function loadFreshness() {
+  google.script.run.withSuccessHandler(r => { if (r && r.success && r.data.updatedAt) { DATA_FRESH = r.data.updatedAt; setUpdated(); } }).apiGetDataFreshness();
+}
+function setUpdated() {
+  document.getElementById('updatedAt').textContent = DATA_FRESH ? 'Data diperbarui ' + DATA_FRESH : 'Dimuat ' + new Date().toLocaleTimeString('id-ID');
+  enhanceTables();
+}
+
+function showError(err) {
+  const msg = (err && err.message) ? err.message : String(err);
+  document.getElementById('pageContent').innerHTML = `
+    <div class="error-box" style="display:flex; align-items:flex-start; gap:10px;">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0; margin-top:2px;"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      <div><b>Error:</b><br>${esc(msg)}</div>
+    </div>`;
+}
+
+function showEmpty(text) { document.getElementById('pageContent').innerHTML = `<div class="empty-box">${text || 'Tidak ada data.'}</div>`; }
+function handleResponse(res, renderFn) { if (!res) return showError('Response kosong'); if (!res.success) return showError(res.error); renderFn(res.data); }
+function fmtPct(v) { 
+  return (v !== null && v !== undefined && !isNaN(v)) ? Number(v).toFixed(1) + '%' : '—'; 
+}
+function getFilterLabel() { const p = []; if (STATE.hub) p.push(`Hub: ${STATE.hub}`); if (STATE.month) p.push(`Bulan: ${formatMonthLabel(STATE.month)}`); if (STATE.week) p.push(`Minggu: ${STATE.week}`); if (STATE.date) p.push(`Tanggal: ${STATE.date}`); return p.length ? p.join(' · ') : 'Semua data'; }
+function parsePct(str) { if (!str || str === '—') return null; const n = parseFloat(String(str).replace('%','')); return isNaN(n) ? null : n; }
+
+let WARN_THRESHOLD = 99.00;
+function tier(v) {
+  if (v === null || v === undefined || isNaN(v)) return 'nodata';
+  return v >= TARGET_THRESHOLD ? 'tercapai' : (v >= WARN_THRESHOLD ? 'waspada' : 'kritis');
+}
+function getStatusClass(val) { return tier(val); }
+function harianCellClass(v) { return tier(v); }
+function wmCellClass(s) { return tier(parsePct(s)); }
+
+function reloadAll() {
+  showSkeletonLoading();
+  Object.keys(FRONTEND_CACHE).forEach(k => delete FRONTEND_CACHE[k]);
+
+  google.script.run
+    .withSuccessHandler(res => {
+      delete FRONTEND_CACHE[`filter_options_${STATE.mode}`];
+      DATA_FRESH = ''; loadFreshness();
+      loadFilterOptions();
+    })
+    .withFailureHandler(err => showError('Gagal melakukan refresh: ' + err))
+    .apiClearCache();
+}
+
+function renderPage() {
+  showSkeletonLoading();
+  renderChips(); updateMetricVisibility();
+  
+  const isCLorPIC = USER_ACCESS && (USER_ACCESS.role === 'City Lead' || USER_ACCESS.role === 'PIC');
+  if ((STATE.page === 'toplow' || STATE.page === 'perhub' || STATE.page === 'rekomendasihub' || STATE.page === 'checkpoint' || STATE.page === 'sharing') && !isCLorPIC) {
+    document.getElementById('pageContent').innerHTML = `
+      <div class="card" style="padding: 40px; text-align: center;">
+        <div style="display:flex; justify-content:center; margin-bottom:12px; color:var(--text-muted);">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        </div>
+        <h3 style="font-size: 16px; font-weight: 700; color: var(--text-main);">Akses Terbatas</h3>
+        <p style="font-size: 13px; color: var(--text-muted); margin-top: 6px;">Menu ini hanya dapat diakses oleh City Lead dan PIC.</p>
+      </div>`;
+    return;
+  }
+
+  switch (STATE.page) {
+    case 'ringkasan':       loadRingkasan(); break;
+    case 'harian':          loadHarian(); break;
+    case 'daily_regular':   loadDailyReport('regular'); break;
+    case 'daily_high':      loadDailyReport('high'); break;
+    case 'daily_lm':        loadDailyReport('regular'); break;
+    case 'toplow':          loadTopLow(); break;
+    case 'weekly':          loadWeekly(); break;
+    case 'trendweekly':     loadWeeklyTrend(); break;
+    case 'monthly':         loadMonthly(); break;
+    case 'bottomprioritas': loadBottomPrioritas(); break;
+    case 'rekomendasihub':  loadRekomendasiHub(); break;
+    case 'rekomendasihub2': loadHypercareV2(); break;
+    case 'checkpoint':      loadCheckpoint(); break;
+    case 'sharing':         loadSharing(); break;
+    case 'perhub':          loadPerHub(); break;
+  }
+}
+</script>

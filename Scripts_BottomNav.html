@@ -1,0 +1,195 @@
+<script>
+/* ═══ BOTTOM NAV v2 (mobile ≤768px) ═══
+   Bar bawah mengambang + lembar "Menu" berisi kartu berikon, dikelompokkan per bagian.
+   Dibangun dari tombol #mainNav, jadi hak akses, tombol per mode, dan label otomatis ikut.
+   Gaya disisipkan dari sini (menimpa blok "Bottom nav" lama di Styles.html), jadi cukup mengganti file ini. */
+(function () {
+  const nav = document.getElementById('mainNav'), dash = document.getElementById('dashboardPage');
+  if (!nav || !dash) return;
+
+  if (!document.getElementById('bnStyleV2')) {
+    const st = document.createElement('style'); st.id = 'bnStyleV2';
+    st.textContent = `
+@media (max-width:768px){
+  main{padding-bottom:104px}
+  .toast-wrap{bottom:96px}
+  .bottomnav{left:12px;right:12px;bottom:calc(10px + env(safe-area-inset-bottom,0px));padding:6px;gap:4px;border:1px solid var(--border);border-radius:22px;background:var(--card-solid);box-shadow:0 10px 30px rgba(0,0,0,.14),0 2px 6px rgba(0,0,0,.06)}
+  .bn-item{position:relative;gap:3px;padding:8px 2px 7px;min-height:52px;border-radius:16px;font-size:11px;font-weight:600;letter-spacing:.1px;transition:background .2s,color .2s}
+  .bn-item svg{width:22px;height:22px;transition:transform .2s}
+  .bn-item span{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .bn-item.active{color:var(--primary);background:var(--primary-light);font-weight:800}
+  .bn-item.active svg{transform:translateY(-1px)}
+  .bn-item:active{transform:scale(.97)}
+  .bn-sheet{background:rgba(15,23,42,.42);-webkit-backdrop-filter:blur(3px);backdrop-filter:blur(3px);overscroll-behavior:contain}
+  .bn-sheet.open{animation:bnFade .18s ease-out}
+  .bn-panel{border-radius:26px 26px 0 0;padding:10px 16px calc(100px + env(safe-area-inset-bottom,0px));max-height:84vh;overscroll-behavior:contain;box-shadow:0 -12px 40px rgba(0,0,0,.18);animation:bnUp .24s cubic-bezier(.2,.8,.2,1)}
+  .bn-handle{width:40px;height:4px;border-radius:2px;background:var(--border);margin:0 auto 12px}
+  .bn-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:6px}
+  .bn-head h2{font-size:18px;font-weight:800;letter-spacing:-.2px;margin:0;color:var(--text-main)}
+  .bn-head .bn-now{font-size:12px;color:var(--text-muted);margin-top:2px}
+  .bn-close{display:grid;place-items:center;width:36px;height:36px;border:1px solid var(--border);border-radius:50%;background:var(--bg);color:var(--text-muted);cursor:pointer;flex-shrink:0}
+  .bn-close svg{width:18px;height:18px}
+  .bn-title{padding:14px 2px 8px;font-size:11px;font-weight:800;letter-spacing:.6px}
+  .bn-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .bn-opt{display:flex;align-items:center;gap:10px;width:100%;min-height:56px;padding:10px 12px;border:1px solid var(--border);border-radius:16px;background:var(--card-solid);font-size:13px;font-weight:600;line-height:1.25;transition:background .15s,border-color .15s}
+  .bn-opt:active{transform:scale(.98)}
+  .bn-ico{display:grid;place-items:center;width:34px;height:34px;border-radius:11px;background:var(--bg);color:var(--text-muted);flex-shrink:0}
+  .bn-ico svg{width:18px;height:18px}
+  .bn-lbl{min-width:0;overflow-wrap:anywhere}
+  .bn-opt.active{background:var(--primary-light);border-color:var(--primary);color:var(--primary);font-weight:800}
+  .bn-opt.active .bn-ico{background:var(--primary);color:var(--on-primary,#fff)}
+}
+@keyframes bnFade{from{opacity:0}to{opacity:1}}
+@keyframes bnUp{from{transform:translateY(24px);opacity:.6}to{transform:none;opacity:1}}
+@media (prefers-reduced-motion:reduce){.bn-sheet.open,.bn-panel{animation:none}.bn-item,.bn-opt,.bn-item svg{transition:none}}`;
+    document.head.appendChild(st);
+  }
+
+  const svg = p => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + p + '</svg>';
+  const IC = {
+    grid: svg('<rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/>'),
+    pulse: svg('<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>'),
+    trend: svg('<polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/>'),
+    menu: svg('<line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>'),
+    x: svg('<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>'),
+    cal: svg('<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>'),
+    clock: svg('<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>'),
+    zap: svg('<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>'),
+    bars: svg('<line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>'),
+    pie: svg('<path d="M21.21 15.89A10 10 0 1 1 8 2.83"/><path d="M22 12A10 10 0 0 0 12 2v10z"/>'),
+    trophy: svg('<path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2z"/>'),
+    alert: svg('<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>'),
+    bldg: svg('<path d="M3 21h18"/><path d="M5 21V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16"/><path d="M9 8h1"/><path d="M9 12h1"/><path d="M14 8h1"/><path d="M14 12h1"/>'),
+    check: svg('<polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>'),
+    users: svg('<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>'),
+    report: svg('<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>'),
+    dot: svg('<circle cx="12" cy="12" r="3"/>')
+  };
+  const PAGE_ICON = {
+    ringkasan: 'grid', harian: 'cal', daily_regular: 'clock', daily_high: 'zap', daily_lm: 'clock',
+    weekly: 'bars', monthly: 'pie', toplow: 'trophy', trendweekly: 'trend', bottomprioritas: 'alert',
+    perhub: 'bldg', rekomendasihub: 'pulse', rekomendasihub2: 'pulse', checkpoint: 'check', sharing: 'users'
+  };
+  /* Bar bawah = 4 grup menu (sama dengan tab di desktop). Ringkasan langsung buka halaman; lainnya buka lembar sub-menu. */
+  const ITEMS = [
+    { key: 'ringkasan', label: 'Ringkasan', page: 'ringkasan', icon: 'grid' },
+    { key: 'Laporan',   label: 'Laporan',   icon: 'report' },
+    { key: 'Analisis',  label: 'Analisis',  icon: 'trend' },
+    { key: 'Aksi',      label: 'Aksi',      icon: 'zap' }
+  ];
+  const ico = p => IC[PAGE_ICON[p] || 'dot'];
+
+  const bn = document.createElement('nav');
+  bn.className = 'bottomnav'; bn.id = 'bottomNav'; bn.setAttribute('aria-label', 'Menu utama (ponsel)');
+  const sheet = document.createElement('div');
+  sheet.className = 'bn-sheet'; sheet.id = 'bnSheet';
+  document.body.appendChild(sheet); document.body.appendChild(bn);
+
+  const navBtn = page => nav.querySelector('button[data-page="' + page + '"]');
+  const visible = b => !!b && getComputedStyle(b).display !== 'none';
+  const labelOf = b => (b.textContent || '').trim();
+  const esc2 = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const isOpen = () => sheet.classList.contains('open');
+  const groupBtns = it => {
+    if (it.page) return [navBtn(it.page)].filter(visible);
+    const g = nav.querySelector('.nav-group[aria-label="' + it.key + '"]');
+    return g ? Array.from(g.querySelectorAll('button[data-page]')).filter(visible) : [];
+  };
+  const itemActive = it => groupBtns(it).some(b => b.dataset.page === STATE.page);
+  let curGroup = null;
+
+  let opener = null, prevOverflow = '';
+
+  function go(page) {
+    const b = navBtn(page);
+    closeSheet(true);
+    if (b) b.click();
+    window.scrollTo({ top: 0 });
+  }
+
+  function build() {
+    bn.innerHTML = ITEMS.filter(it => groupBtns(it).length).map(it => {
+      const on = isOpen() ? curGroup === it.key : itemActive(it);
+      return '<button type="button" class="bn-item' + (on ? ' active' : '') + '" data-bn="' + (it.page ? it.page : '__g:' + it.key) + '"' +
+        (on ? ' aria-current="page"' : '') + (it.page ? '' : ' aria-haspopup="dialog" aria-expanded="' + (isOpen() && curGroup === it.key) + '"') + '>' +
+        IC[it.icon] + '<span>' + esc2(it.label) + '</span></button>';
+    }).join('');
+  }
+
+  function buildSheet() {
+    const it = ITEMS.find(x => x.key === curGroup); if (!it) return;
+    const curBtn = navBtn(STATE.page);
+    let h = '<div class="bn-panel" role="dialog" aria-modal="true" aria-labelledby="bnTtl">' +
+      '<div class="bn-handle" aria-hidden="true"></div>' +
+      '<div class="bn-head"><div><h2 id="bnTtl">' + esc2(it.label) + '</h2><div class="bn-now">Sedang dibuka: ' + esc2(curBtn ? labelOf(curBtn) : '—') + '</div></div>' +
+      '<button type="button" class="bn-close" data-bn="__close" aria-label="Tutup menu">' + IC.x + '</button></div>' +
+      '<div class="bn-grid">';
+    groupBtns(it).forEach(b => {
+      const p = b.dataset.page, on = p === STATE.page;
+      h += '<button type="button" class="bn-opt' + (on ? ' active' : '') + '" data-bn="' + p + '"' + (on ? ' aria-current="page"' : '') + '>' +
+        '<span class="bn-ico">' + ico(p) + '</span><span class="bn-lbl">' + esc2(labelOf(b)) + '</span></button>';
+    });
+    sheet.innerHTML = h + '</div></div>';
+  }
+
+  function openSheet(from, key) {
+    opener = from || document.activeElement; curGroup = key;
+    buildSheet(); sheet.classList.add('open');
+    prevOverflow = document.body.style.overflow; document.body.style.overflow = 'hidden';
+    build();
+    const a = sheet.querySelector('.bn-opt.active') || sheet.querySelector('.bn-opt');
+    if (a) a.focus();
+  }
+  function closeSheet(silent) {
+    if (!isOpen()) return;
+    sheet.classList.remove('open'); document.body.style.overflow = prevOverflow;
+    build();
+    if (!silent && opener && document.body.contains(opener) && opener.focus) opener.focus();
+  }
+
+  bn.addEventListener('click', e => {
+    const b = e.target.closest('[data-bn]'); if (!b) return;
+    const v = b.dataset.bn;
+    if (v.indexOf('__g:') === 0) {
+      const k = v.slice(4);
+      if (isOpen() && curGroup === k) closeSheet();
+      else if (isOpen()) { curGroup = k; buildSheet(); build(); }
+      else openSheet(b, k);
+    } else go(v);
+  });
+  sheet.addEventListener('click', e => {
+    if (e.target === sheet) { closeSheet(); return; }
+    const b = e.target.closest('[data-bn]'); if (!b) return;
+    if (b.dataset.bn === '__close') closeSheet(); else go(b.dataset.bn);
+  });
+  document.addEventListener('keydown', e => {
+    if (!isOpen()) return;
+    if (e.key === 'Escape') { e.preventDefault(); closeSheet(); return; }
+    if (e.key !== 'Tab') return;
+    const f = Array.from(sheet.querySelectorAll('button')).concat(Array.from(bn.querySelectorAll('button')));
+    if (!f.length) return;
+    const first = f[0], last = f[f.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  });
+
+  /* Sinkron: tombol #mainNav berubah (aktif / tampil-sembunyi karena akses atau mode) */
+  let pend = false;
+  const sync = () => {
+    if (pend) return; pend = true;
+    requestAnimationFrame(() => { pend = false; build(); if (isOpen()) buildSheet(); });
+  };
+  new MutationObserver(sync).observe(nav, { subtree: true, attributes: true, attributeFilter: ['class', 'style'] });
+  /* Layar diputar / diperlebar ke desktop: tutup lembar */
+  window.addEventListener('resize', () => { if (isOpen() && window.innerWidth > 768) closeSheet(true); });
+
+  /* Menu bawah hanya tampil di dashboard, bukan di halaman pilih divisi */
+  const vis = () => {
+    const hidden = dash.classList.contains('view-hidden');
+    bn.style.display = hidden ? 'none' : '';
+    if (hidden) closeSheet(true);
+  };
+  new MutationObserver(vis).observe(dash, { attributes: true, attributeFilter: ['class'] });
+  vis(); build();
+})();
+</script>

@@ -1,0 +1,114 @@
+<script>
+/* ═══ NAV 2 TINGKAT (desktop & tablet ≥769px) ═══
+   Tab atas = grup menu (Ringkasan, Laporan, Analisis, Aksi); pill di bawahnya = halaman di grup aktif.
+   Dibangun dari tombol #mainNav (tetap ada sebagai sumber kebenaran, hanya disembunyikan di desktop),
+   jadi hak akses, tombol per mode (FM/LM), label otomatis, dan logika halaman lama tidak berubah. */
+(function () {
+  const nav = document.getElementById('mainNav');
+  const wrap = nav && nav.parentElement;
+  if (!nav || !wrap || document.getElementById('nav2')) return;
+
+  if (!document.getElementById('nav2Style')) {
+    const st = document.createElement('style'); st.id = 'nav2Style';
+    st.textContent = `
+@media (min-width:769px){
+  .mainnav-wrapper > .mainnav{display:none}
+  .nav2{pointer-events:auto;background:rgba(255,255,255,.75);-webkit-backdrop-filter:blur(20px);backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,.5);border-radius:16px;box-shadow:0 8px 32px rgba(0,0,0,.05);overflow:hidden;transition:background .3s,border-color .3s}
+  body.dark-mode .nav2{background:rgba(28,28,30,.75);border-color:rgba(255,255,255,.1)}
+  .nav2-tabs{display:flex;gap:2px;padding:0 8px;border-bottom:1px solid var(--border)}
+  .nav2-tab{display:flex;align-items:center;justify-content:center;gap:8px;flex:1 1 0;min-width:0;padding:13px 10px 11px;border:none;border-bottom:3px solid transparent;border-radius:0;background:transparent;color:var(--text-muted);font:inherit;font-size:13.5px;font-weight:600;cursor:pointer;white-space:nowrap;transition:color .2s,border-color .2s}
+  .nav2-tab svg{width:18px;height:18px;flex-shrink:0}
+  .nav2-tab:hover{color:var(--text-main)}
+  .nav2-tab.active{color:var(--primary);border-bottom-color:var(--primary);font-weight:700}
+  .nav2-sub{display:flex;gap:6px;padding:10px 12px;overflow-x:auto;scrollbar-width:none}
+  .nav2-sub::-webkit-scrollbar{display:none}
+  .nav2-sub[hidden]{display:none}
+  .nav2-pill{flex:0 0 auto;padding:7px 14px;border:1px solid var(--border);border-radius:99px;background:var(--card-solid);color:var(--text-muted);font:inherit;font-size:12.5px;font-weight:600;cursor:pointer;white-space:nowrap;transition:all .2s}
+  .nav2-pill:hover{color:var(--text-main);border-color:var(--primary)}
+  .nav2-pill.active{background:var(--primary);border-color:var(--primary);color:var(--on-primary,#fff)}
+  .nav2-tab:focus-visible,.nav2-pill:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+}
+@media (max-width:768px){.nav2{display:none}}
+@media (prefers-reduced-motion:reduce){.nav2-tab,.nav2-pill,.nav2{transition:none}}`;
+    document.head.appendChild(st);
+  }
+
+  const svg = p => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + p + '</svg>';
+  const IC = {
+    grid: svg('<rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/>'),
+    report: svg('<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>'),
+    trend: svg('<polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/>'),
+    zap: svg('<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>')
+  };
+  const ICON_BY_LABEL = { Laporan: 'report', Analisis: 'trend', Aksi: 'zap' };
+
+  const visible = b => !!b && getComputedStyle(b).display !== 'none';
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const label = b => (b.textContent || '').trim();
+
+  const root = document.createElement('div');
+  root.className = 'nav2'; root.id = 'nav2';
+  root.innerHTML = '<div class="nav2-tabs" id="nav2Tabs" role="group" aria-label="Menu utama"></div><div class="nav2-sub" id="nav2Sub" role="group" aria-label="Sub-menu"></div>';
+  wrap.insertBefore(root, nav);
+  const tabsEl = root.querySelector('#nav2Tabs'), subEl = root.querySelector('#nav2Sub');
+
+  /* Grup dari #mainNav: grup tanpa label = tombol langsung (Ringkasan) */
+  const groups = () => Array.from(nav.querySelectorAll('.nav-group')).map(g => {
+    const lab = g.querySelector('.nav-group-label');
+    const btns = Array.from(g.querySelectorAll('button[data-page]'));
+    return { name: lab ? lab.textContent.trim() : (btns[0] ? label(btns[0]) : 'Utama'), direct: !lab, btns, visBtns: btns.filter(visible) };
+  }).filter(g => g.visBtns.length);
+
+  let selected = null; /* nama grup yang sub-menunya sedang dibuka */
+  const activeBtn = () => nav.querySelector('button[data-page].active');
+
+  function render() {
+    const gs = groups(); if (!gs.length) return;
+    const ab = activeBtn();
+    const activeGroup = ab ? gs.find(g => g.btns.indexOf(ab) >= 0) : null;
+    if (activeGroup && activeGroup.name !== lastActive) selected = activeGroup.name;
+    lastActive = activeGroup ? activeGroup.name : lastActive;
+    if (!gs.some(g => g.name === selected)) selected = (activeGroup || gs[0]).name;
+    const sel = gs.find(g => g.name === selected);
+
+    tabsEl.innerHTML = gs.map(g => {
+      const on = g.name === selected;
+      return '<button type="button" class="nav2-tab' + (on ? ' active' : '') + '" data-g="' + esc(g.name) + '"' + (on ? ' aria-current="true"' : '') + '>' +
+        (g.direct ? IC.grid : IC[ICON_BY_LABEL[g.name] || 'report']) + '<span>' + esc(g.name) + '</span></button>';
+    }).join('');
+
+    if (sel.direct) { subEl.hidden = true; subEl.innerHTML = ''; return; }
+    subEl.hidden = false;
+    subEl.innerHTML = sel.visBtns.map(b => {
+      const on = b === ab;
+      return '<button type="button" class="nav2-pill' + (on ? ' active' : '') + '" data-p="' + esc(b.dataset.page) + '"' + (on ? ' aria-current="page"' : '') + '>' + esc(label(b)) + '</button>';
+    }).join('');
+    const cur = subEl.querySelector('.nav2-pill.active');
+    if (cur && cur.scrollIntoView) { const l = cur.offsetLeft - 12; if (l < subEl.scrollLeft || l > subEl.scrollLeft + subEl.clientWidth - cur.offsetWidth) subEl.scrollLeft = Math.max(0, l - 24); }
+  }
+  let lastActive = null;
+
+  const btnFor = page => nav.querySelector('button[data-page="' + page + '"]');
+
+  tabsEl.addEventListener('click', e => {
+    const t = e.target.closest('[data-g]'); if (!t) return;
+    const g = groups().find(x => x.name === t.dataset.g); if (!g) return;
+    selected = g.name;
+    const ab = activeBtn();
+    if (g.direct || g.visBtns.indexOf(ab) < 0) g.visBtns[0].click(); /* pindah ke halaman pertama grup */
+    render();
+    window.scrollTo({ top: 0 });
+  });
+  subEl.addEventListener('click', e => {
+    const p = e.target.closest('[data-p]'); if (!p) return;
+    const b = btnFor(p.dataset.p); if (b) b.click();
+    window.scrollTo({ top: 0 });
+  });
+
+  /* Sinkron: tombol #mainNav berubah (aktif, tampil/sembunyi karena akses atau mode, label) */
+  let pend = false;
+  const sync = () => { if (pend) return; pend = true; requestAnimationFrame(() => { pend = false; render(); }); };
+  new MutationObserver(sync).observe(nav, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['class', 'style'] });
+  render();
+})();
+</script>

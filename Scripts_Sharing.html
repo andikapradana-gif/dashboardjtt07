@@ -1,0 +1,281 @@
+<script>
+/* ═══ SHARING SESSION — rekomendasi 1 hub FM + 1 hub LM dengan tren naik (CL / PIC) ═══ */
+const SHR = { data: null, cmp: 'L1_L0', crit: 'delta' };
+const SHR_CRIT = {
+  delta:   { label: 'Kenaikan skor terbesar', tag: 'kenaikan skor', desc: 'Dipilih dari hub dengan kenaikan skor mingguan terbesar (minimal +0.05 pt dan ada metrik yang membaik).' },
+  streak:  { label: 'Naik berturut-turut terlama', tag: 'rangkaian naik', desc: 'Dipilih dari hub yang skornya naik paling lama berturut-turut (maks. 4 minggu), lalu kenaikan terbesar.' },
+  score:   { label: 'Skor tertinggi (yang sedang naik)', tag: 'skor', desc: 'Dipilih dari hub yang sedang naik dengan skor mingguan tertinggi.' },
+  crossed: { label: 'Metrik lolos cutoff terbanyak', tag: 'metrik lolos cutoff', desc: 'Dipilih dari hub yang paling banyak metriknya baru lolos cutoff minggu ini (harus ada minimal 1).' }
+};
+function shrControls_() {
+  const o = (cur, v, t) => '<option value="' + v + '"' + (cur === v ? ' selected' : '') + '>' + t + '</option>';
+  const lab = 'font-size:11px; font-weight:700; color:var(--text-muted); display:flex; flex-direction:column; gap:4px;';
+  return '<div style="display:flex; gap:12px; flex-wrap:wrap; margin-top:14px;">' +
+    '<label style="' + lab + '">Pembanding<select class="select" onchange="shrChange_(\'cmp\', this.value)">' +
+      o(SHR.cmp, 'L1_L0', 'L1W → L0W (minggu terbaru)') + o(SHR.cmp, 'L2_L1', 'L2W → L1W (minggu sebelumnya)') + '</select></label>' +
+    '<label style="' + lab + '">Kriteria narasumber<select class="select" onchange="shrChange_(\'crit\', this.value)">' +
+      Object.keys(SHR_CRIT).map(k => o(SHR.crit, k, SHR_CRIT[k].label)).join('') + '</select></label></div>';
+}
+function shrChange_(k, v) {
+  SHR[k] = v;
+  if (typeof showSkeletonLoading === 'function') showSkeletonLoading();
+  loadSharing();
+}
+
+function loadSharing() {
+  const key = 'sharing_' + (STATE.week || 'latest') + '_' + SHR.cmp + '_' + SHR.crit;
+  const cached = cacheGet(key); if (cached) return renderSharing(cached);
+  google.script.run
+    .withSuccessHandler(res => handleResponse(res, data => { cacheSet(key, data); if (STATE.page === 'sharing') renderSharing(data); }))
+    .withFailureHandler(showError)
+    .apiGetSharingSession(STATE.week || '', SHR.cmp, SHR.crit);
+}
+
+function shrF_(v, sign) { return (v === null || v === undefined || isNaN(v)) ? '—' : (sign && v > 0 ? '+' : '') + Number(v).toFixed(2); }
+
+function shrMessage_(d) {
+  const p = d && d.pick; if (!p) return '';
+  const L = [];
+  L.push('*SHARING SESSION ' + d.mode + ' · JTT-07*');
+  L.push('Narasumber: *' + p.hub + '*');
+  L.push('Skor naik ' + shrF_(p.prevScore) + '% → ' + shrF_(p.score) + '% (' + shrF_(p.delta, true) + ' pt) dari ' + d.prevWeek + ' ke ' + d.week + (p.streak >= 2 ? ' · naik ' + p.streak + ' minggu berturut-turut' : ''));
+  L.push('');
+  L.push('Metrik kunci yang membaik:');
+  p.improved.forEach(i => L.push('• ' + i.label + ': ' + shrF_(i.prev) + '% → ' + shrF_(i.cur) + '% (' + shrF_(i.delta, true) + ' pt)' + (i.crossed ? ' — lolos cutoff' : '')));
+  L.push('');
+  L.push('Yang akan dibagikan: penyebab masalah sebelumnya, langkah yang paling berdampak, dan cara menjaga hasilnya.');
+  L.push('Hub lain mohon siapkan 1 pertanyaan atau kendala serupa untuk dibahas.');
+  return L.join('\n');
+}
+
+function shrCopy_(which) {
+  const d = SHR.data; if (!d) return;
+  const parts = (which === 'ALL' ? ['FM', 'LM'] : [which]).map(m => shrMessage_(d[m])).filter(Boolean);
+  if (!parts.length) { toast('Gagal: belum ada rekomendasi untuk disalin.', true); return; }
+  copyText(parts.join('\n\n'), 'Pesan sharing session disalin');
+}
+
+function shrCard_(m, d) {
+  const name = m === 'LM' ? 'Last Mile (LM)' : 'First Mile (FM)';
+  const head = '<h3 style="font-size:16px; margin:0 0 4px;">' + name + '</h3>';
+  if (!d || d.denied) return '<div class="card">' + head + '<div class="subtitle">Tidak ada akses untuk divisi ini.</div></div>';
+  if (d.error) return '<div class="card">' + head + '<div class="subtitle" style="color:var(--crit-text)">' + esc(d.error) + '</div></div>';
+
+  const ctx = 'Periode ' + esc(d.week) + ' vs ' + esc(d.prevWeek) + ' · ' + d.hubsUp + ' dari ' + d.hubCount + ' hub naik · rata-rata semua hub ' + shrF_(d.avgDelta, true) + ' pt';
+  const warn = d.weekFallback ? '<div class="subtitle" style="color:var(--warn-text); margin-top:4px;">Minggu terpilih belum ada datanya di ' + m + ', ditampilkan minggu terbaru.</div>' : '';
+  const p = d.pick;
+  if (!p) return '<div class="card">' + head + '<div class="subtitle">' + ctx + '</div>' + warn + '<div class="empty-box" style="margin-top:12px;">Belum ada hub dengan kenaikan skor yang memenuhi syarat minggu ini.</div></div>';
+
+  const metricRows = p.improved.map(i => {
+    const n = i.note;
+    return '<div style="padding:10px 0; border-top:1px dashed var(--border);">' +
+      '<div style="display:flex; justify-content:space-between; gap:8px; flex-wrap:wrap;"><b style="font-size:13px;">' + esc(i.label) + '</b>' +
+      '<span style="font-size:12px;">' + shrF_(i.prev) + '% → <b>' + shrF_(i.cur) + '%</b> <span style="color:var(--ok-text); font-weight:700;">' + shrF_(i.delta, true) + ' pt</span>' +
+      (i.crossed ? ' <span class="badge tercapai" style="font-size:10px; padding:2px 8px;">Lolos cutoff</span>' : '') + '</span></div>' +
+      (n ? '<div style="font-size:12px; margin-top:6px; background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:8px 10px;">' +
+        (n.rootCause ? '<div><b>Root cause:</b> ' + esc(n.rootCause) + '</div>' : '') +
+        (n.actionPlan ? '<div style="margin-top:2px;"><b>Action plan:</b> ' + esc(n.actionPlan) + '</div>' : '') +
+        (n.pic ? '<div class="subtitle">PIC: ' + esc(n.pic) + (n.status ? ' · ' + esc(n.status) : '') + '</div>' : '') + '</div>'
+        : '<div class="subtitle" style="margin-top:4px;">Belum ada catatan Hypercare untuk metrik ini. Tanyakan langsung ke hub.</div>') +
+      '</div>';
+  }).join('');
+
+  const below = p.belowCount ? '<div class="subtitle" style="margin-top:10px;">Masih di bawah cutoff (' + p.belowCount + ' metrik)' +
+    (p.below.length ? ': ' + p.below.map(b => esc(b.label) + ' ' + shrF_(b.cur) + '%').join(' · ') : '') + '</div>' : '';
+  const alts = (d.alternates || []).length ? '<div class="subtitle" style="margin-top:6px;">Alternatif: ' + d.alternates.map(a => '<b>' + esc(a.hub) + '</b> (' + shrF_(a.delta, true) + ' pt)').join(' · ') + '</div>' : '';
+  const spk = (p.speakers || []).length ? '<div class="subtitle" style="margin-top:6px;">Email Hub Lead narasumber (Access Web): ' + p.speakers.map(esc).join(', ') + '</div>'
+    : '<div class="subtitle" style="margin-top:6px;">Email Hub Lead hub ini belum ada di sheet Access Web.</div>';
+  const agenda = ['Konteks (3 mnt): kondisi minggu lalu dan target ' + Number(d.cutoff).toFixed(2) + '%',
+    'Cerita hub (10 mnt): apa yang berubah pada metrik kunci di atas',
+    'Praktik yang bisa ditiru (10 mnt): langkah paling berdampak, siapa melakukan apa',
+    'Tanya jawab dan komitmen hub lain (7 mnt)'];
+
+  return '<div class="card" style="border-left:4px solid var(--ok-text);">' +
+    '<div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;"><div>' + head + '<div class="subtitle">' + ctx + '</div>' + warn + '</div>' +
+    '<button type="button" class="btn-trend-tab" onclick="shrCopy_(\'' + m + '\')">' + ICON.clipboard + ' Salin pesan ' + m + '</button></div>' +
+    '<div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin:14px 0 4px;">' +
+      '<div style="font-size:22px; font-weight:800;">' + esc(p.hub) + '</div>' +
+      '<span class="badge tercapai">Rekomendasi narasumber</span>' +
+      (p.streak >= 2 ? '<span class="chip">Naik ' + p.streak + ' minggu berturut-turut</span>' : '') + '</div>' +
+    '<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; font-size:14px;">Skor <b>' + shrF_(p.prevScore) + '% → ' + shrF_(p.score) + '%</b> ' + formatTrendDelta(p.delta) +
+      '<span class="subtitle">' + (SHR_CRIT[d.criteria] || SHR_CRIT.delta).tag + ' #1 dari ' + d.hubCount + ' hub</span></div>' +
+    '<div style="font-weight:700; font-size:13px; margin-top:14px;">Metrik kunci yang membaik (diurutkan menurut kontribusi ke skor)</div>' + metricRows + below +
+    '<details style="margin-top:12px; font-size:12px;"><summary style="cursor:pointer; font-weight:700;">Usulan agenda 30 menit</summary><ol style="margin:8px 0 0 18px; padding:0; line-height:1.6;">' +
+      agenda.map(a => '<li>' + esc(a) + '</li>').join('') + '</ol></details>' + spk + alts + '</div>';
+}
+
+function renderSharing(d) {
+  SHR.data = d;
+  const hasAny = ['FM', 'LM'].some(m => d[m] && d[m].pick);
+  const html =
+    '<div class="card" style="margin-bottom:16px;"><div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">' +
+      '<div><h3 style="font-size:16px; margin:0 0 4px;">Sharing Session · rekomendasi narasumber</h3>' +
+      '<div class="subtitle">' + SHR_CRIT[SHR.crit].desc + ' Ikut minggu di filter periode.</div></div>' +
+      (hasAny ? '<div style="display:flex; gap:8px; flex-wrap:wrap;">' +
+        '<button type="button" class="btn-trend-tab" onclick="shrCopy_(\'ALL\')">' + ICON.clipboard + ' Salin pesan FM + LM</button>' +
+        '<button type="button" class="btn-trend-tab active" onclick="shbOpen(this)">Blast &amp; Google Meet</button></div>' : '') +
+    '</div>' + shrControls_() + '</div>' +
+    '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(340px,1fr)); gap:16px;">' + shrCard_('FM', d.FM) + shrCard_('LM', d.LM) + '</div>';
+  document.getElementById('pageContent').innerHTML = html;
+  setUpdated();
+}
+/* ═══ BLAST + GOOGLE MEET SHARING SESSION (CL / PIC) ═══ */
+const SHB = { scope: 'ALL', meet: '', msgEdited: false, guestsEdited: false, seq: 0, opener: null, keyHandler: null };
+
+function shbModes_(scope) {
+  const d = SHR.data || {};
+  return (scope === 'ALL' ? ['FM', 'LM'] : [scope]).filter(m => d[m] && d[m].pick);
+}
+function shbScopeLabel_() { const m = shbModes_(SHB.scope); return m.length > 1 ? 'FM + LM' : (m[0] || ''); }
+
+function shbBuildMessage_() {
+  const d = SHR.data, modes = shbModes_(SHB.scope);
+  if (!d || !modes.length) return '';
+  const L = [];
+  L.push('*SHARING SESSION ' + shbScopeLabel_() + ' · JTT-07*');
+  modes.forEach(m => {
+    const x = d[m], p = x.pick;
+    L.push('');
+    L.push('*' + m + '* · Narasumber: *' + p.hub + '*');
+    L.push('Skor ' + shrF_(p.prevScore) + '% → ' + shrF_(p.score) + '% (' + shrF_(p.delta, true) + ' pt) dari ' + x.prevWeek + ' ke ' + x.week + (p.streak >= 2 ? ' · naik ' + p.streak + ' minggu berturut-turut' : ''));
+    L.push('Metrik kunci yang membaik:');
+    p.improved.forEach(i => L.push('• ' + i.label + ': ' + shrF_(i.prev) + '% → ' + shrF_(i.cur) + '% (' + shrF_(i.delta, true) + ' pt)' + (i.crossed ? ' — lolos cutoff' : '')));
+  });
+  L.push('');
+  L.push('Yang akan dibagikan: penyebab masalah sebelumnya, langkah yang paling berdampak, dan cara menjaga hasilnya.');
+  L.push('');
+  L.push('*' + hcbVal_('shbTitle') + '*');
+  L.push('Hari/tanggal: ' + hcbDateLabel_(hcbVal_('shbDate')));
+  L.push('Jam: ' + (hcbVal_('shbTime') || '—').replace(':', '.') + ' WIB');
+  L.push('Google Meet: ' + HCB_PH);
+  L.push('');
+  L.push('Hub lain mohon siapkan 1 pertanyaan atau kendala serupa untuk dibahas. Terima kasih.');
+  return L.join('\n');
+}
+function shbRefreshMsg_() { const ta = document.getElementById('shbMsg'); if (ta && !SHB.msgEdited) ta.value = shbBuildMessage_(); }
+function shbFinalMsg_() { return hcbVal_('shbMsg').split(HCB_PH).join(SHB.meet || HCB_PH); }
+function shbDefaultTitle_() { const d = SHR.data, m = shbModes_(SHB.scope)[0]; return 'Sharing Session ' + shbScopeLabel_() + ' JTT-07 · ' + (m ? d[m].week : ''); }
+
+function shbLoadGuests_() {
+  const seq = ++SHB.seq, ta = document.getElementById('shbGuests'), note = document.getElementById('shbGuestNote');
+  if (!ta) return;
+  if (!SHB.guestsEdited) { ta.value = ''; ta.placeholder = 'Memuat guest dari Access Web…'; }
+  google.script.run
+    .withSuccessHandler(res => {
+      if (seq !== SHB.seq) return;
+      const ta2 = document.getElementById('shbGuests'), n2 = document.getElementById('shbGuestNote'); if (!ta2) return;
+      if (!res || !res.success) { ta2.placeholder = 'Isi email guest manual'; toast('Gagal memuat guest: ' + (res ? res.error : 'respons kosong'), true); return; }
+      if (!SHB.guestsEdited) ta2.value = res.data.guests.map(g => g.email).join('\n');
+      const spk = [];
+      shbModes_(SHB.scope).forEach(m => (SHR.data[m].pick.speakers || []).forEach(e => { if (spk.indexOf(e) < 0) spk.push(e); }));
+      n2.textContent = res.data.guests.length + ' email (' + res.data.hubLeads + ' Hub Lead semua hub ' + shbScopeLabel_() + ' + ' + res.data.cityLeads + ' City Lead)' +
+        (spk.length ? ' · narasumber: ' + spk.join(', ') : ' · email Hub Lead narasumber belum ada di Access Web') +
+        ' · penyelenggara: ' + (res.data.organizer || 'akun Anda') + ' (otomatis)';
+    })
+    .withFailureHandler(e => { if (seq === SHB.seq) toast('Gagal memuat guest: ' + ((e && e.message) || 'kesalahan jaringan'), true); })
+    .apiGetSharingGuests(SHB.scope);
+}
+
+function shbOpen(opener) {
+  const d = SHR.data;
+  if (!d || !shbModes_('ALL').length) { toast('Gagal: belum ada rekomendasi narasumber untuk dikirim.', true); return; }
+  const avail = shbModes_('ALL');
+  SHB.scope = avail.length > 1 ? 'ALL' : avail[0];
+  SHB.meet = ''; SHB.msgEdited = false; SHB.guestsEdited = false; SHB.opener = opener || document.activeElement;
+  shbClose(true);
+  const fld = 'width:100%; background:var(--card-solid); color:var(--text-main); border:1px solid var(--border); border-radius:6px; padding:8px; font-size:13px; font-family:inherit;';
+  const lab = 'display:block; font-size:11px; font-weight:700; color:var(--text-muted); margin:10px 0 4px;';
+  const scopeOpts = avail.length > 1
+    ? '<option value="ALL" selected>FM + LM (satu meeting)</option><option value="FM">FM saja</option><option value="LM">LM saja</option>'
+    : '<option value="' + avail[0] + '" selected>' + avail[0] + ' saja</option>';
+  const ov = document.createElement('div'); ov.className = 'rpt-overlay'; ov.id = 'shbOverlay';
+  ov.innerHTML =
+    '<div class="rpt-dialog" role="dialog" aria-modal="true" aria-labelledby="shbTtl">' +
+      '<div class="rpt-head"><h2 id="shbTtl">Blast &amp; Google Meet Sharing Session</h2><button type="button" class="btn-icon" id="shbClose" aria-label="Tutup">' + ICON.x + '</button></div>' +
+      '<div class="rpt-body" style="background:var(--card-solid)">' +
+        '<label style="' + lab + '" for="shbScope">Cakupan</label>' +
+        '<select id="shbScope" style="' + fld + '"' + (avail.length > 1 ? '' : ' disabled') + '>' + scopeOpts + '</select>' +
+        '<label style="' + lab + '" for="shbTitle">Judul meeting</label>' +
+        '<input id="shbTitle" style="' + fld + '" maxlength="150" value="' + esc(shbDefaultTitle_()) + '">' +
+        '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px;">' +
+          '<div><label style="' + lab + '" for="shbDate">Hari / tanggal</label><input type="date" id="shbDate" style="' + fld + '" value="' + hcbNextWorkday_() + '"><div class="subtitle" id="shbDayName" style="margin-top:4px"></div></div>' +
+          '<div><label style="' + lab + '" for="shbTime">Jam mulai (WIB)</label><input type="time" id="shbTime" style="' + fld + '" value="14:00"></div>' +
+          '<div><label style="' + lab + '" for="shbDur">Durasi</label><select id="shbDur" style="' + fld + '"><option value="30">30 menit</option><option value="45">45 menit</option><option value="60" selected>60 menit</option><option value="90">90 menit</option></select></div>' +
+        '</div>' +
+        '<label style="' + lab + '" for="shbGuests">Guest (email, pisahkan dengan koma / baris baru)</label>' +
+        '<textarea id="shbGuests" rows="3" style="' + fld + ' resize:vertical;"></textarea>' +
+        '<div class="subtitle" id="shbGuestNote" style="margin-top:4px"></div>' +
+        '<label style="' + lab + '" for="shbMsg">Pesan blast (boleh diedit)</label>' +
+        '<textarea id="shbMsg" rows="14" style="' + fld + ' resize:vertical; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px;"></textarea>' +
+        '<div id="shbResult" class="subtitle" style="margin-top:8px" role="status" aria-live="polite"></div>' +
+      '</div>' +
+      '<div class="rpt-actions">' +
+        '<button type="button" class="btn-trend-tab" id="shbCopy">' + ICON.clipboard + ' Salin pesan</button>' +
+        '<button type="button" class="btn-trend-tab" id="shbWa">Buka WhatsApp</button>' +
+        '<button type="button" class="btn-trend-tab active" id="shbMeet">Buat Google Meet</button>' +
+      '</div></div>';
+  document.body.appendChild(ov); document.body.classList.add('rpt-open');
+
+  const dayName = () => { const n = document.getElementById('shbDayName'); if (n) n.textContent = hcbDateLabel_(hcbVal_('shbDate')); };
+  ['shbTitle', 'shbDate', 'shbTime'].forEach(id => document.getElementById(id).addEventListener('input', () => { dayName(); shbRefreshMsg_(); }));
+  document.getElementById('shbMsg').addEventListener('input', () => { SHB.msgEdited = true; });
+  document.getElementById('shbGuests').addEventListener('input', () => { SHB.guestsEdited = true; });
+  document.getElementById('shbScope').addEventListener('change', e => {
+    SHB.scope = e.target.value;
+    document.getElementById('shbTitle').value = shbDefaultTitle_();
+    shbRefreshMsg_(); shbLoadGuests_();
+  });
+  document.getElementById('shbClose').addEventListener('click', () => shbClose());
+  ov.addEventListener('click', e => { if (e.target === ov) shbClose(); });
+  document.getElementById('shbCopy').addEventListener('click', () => copyText(shbFinalMsg_(), 'Pesan sharing session disalin'));
+  document.getElementById('shbWa').addEventListener('click', () => window.open('https://wa.me/?text=' + encodeURIComponent(shbFinalMsg_()), '_blank', 'noopener'));
+  document.getElementById('shbMeet').addEventListener('click', shbCreateMeet_);
+  dayName(); shbRefreshMsg_(); shbLoadGuests_();
+
+  const dlg = ov.querySelector('.rpt-dialog');
+  SHB.keyHandler = e => {
+    if (e.key === 'Escape') { e.preventDefault(); shbClose(); return; }
+    if (e.key !== 'Tab') return;
+    const f = Array.from(dlg.querySelectorAll('button,input,select,textarea')).filter(b => !b.disabled);
+    if (!f.length) return;
+    const first = f[0], last = f[f.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  };
+  document.addEventListener('keydown', SHB.keyHandler);
+  document.getElementById('shbTitle').focus();
+}
+
+function shbCreateMeet_() {
+  const btn = document.getElementById('shbMeet'), out = document.getElementById('shbResult');
+  if (!btn || btn.disabled) return;
+  const label = btn.textContent; btn.disabled = true; btn.textContent = 'Membuat…';
+  const done = () => { btn.disabled = false; btn.textContent = label; };
+  google.script.run
+    .withSuccessHandler(res => {
+      done();
+      if (!res || !res.success) { toast('Gagal: ' + (res ? res.error : 'respons kosong'), true); return; }
+      const r = res.data;
+      SHB.meet = r.meetLink || '';
+      const ta = document.getElementById('shbMsg');
+      if (ta && SHB.meet) { SHB.msgEdited = true; ta.value = ta.value.split(HCB_PH).join(SHB.meet); }
+      if (out) out.innerHTML = 'Meeting dibuat · ' + esc(String(r.guests)) + ' guest diundang. ' +
+        (SHB.meet ? '<a href="' + esc(SHB.meet) + '" target="_blank" rel="noopener">Buka Google Meet</a>' : 'Link Meet belum tersedia, cek Google Calendar.') +
+        (r.warning ? '<br>' + esc(r.warning) : '');
+      toast('Berhasil: Google Meet sharing session dibuat. Sekarang salin / kirim pesan blast.');
+    })
+    .withFailureHandler(e => { done(); toast('Gagal: ' + ((e && e.message) || 'kesalahan jaringan'), true); })
+    .apiCreateSharingMeeting({
+      scope: SHB.scope, week: STATE.week || '', compare: SHR.cmp, criteria: SHR.crit,
+      title: hcbVal_('shbTitle'), date: hcbVal_('shbDate'), time: hcbVal_('shbTime'), duration: hcbVal_('shbDur'),
+      guests: hcbVal_('shbGuests'), description: hcbVal_('shbMsg')
+    });
+}
+
+function shbClose(silent) {
+  const ov = document.getElementById('shbOverlay'); if (ov) ov.remove();
+  document.body.classList.remove('rpt-open');
+  if (SHB.keyHandler) { document.removeEventListener('keydown', SHB.keyHandler); SHB.keyHandler = null; }
+  if (!silent && SHB.opener && document.body.contains(SHB.opener) && SHB.opener.focus) SHB.opener.focus();
+}
+</script>

@@ -1,0 +1,196 @@
+<script>
+function loadRekomendasiHub() {
+  const hypercareCutoff = getHypercareTargetCutoff();
+  const key = `rekomendasi_${STATE.mode}_${STATE.hub}_${STATE.date}_${STATE.week}_${STATE.month}_cutoff_${hypercareCutoff}`;
+  callApiCached(key, 'apiGetRekomendasiHub',
+    [STATE.mode, STATE.hub, STATE.date, STATE.week, STATE.month, hypercareCutoff],
+    'rekomendasihub', data => {
+      if (data.targetCutoff !== undefined) HC_CUTOFF[STATE.mode] = data.targetCutoff;
+      handleHypercareAccess(data);
+    });
+}
+
+function handleHypercareAccess(data) {
+  const isFullAccess = USER_ACCESS && (USER_ACCESS.role === 'City Lead' || USER_ACCESS.role === 'PIC' || USER_ACCESS.hubAccess.includes('Semua'));
+  const cleanStr = (str) => String(str || '').toLowerCase().replace(/[^a-z0-9]/g, '').trim();
+
+  if (!isFullAccess) {
+    const userHubs = (USER_ACCESS && USER_ACCESS.hubAccess) ? USER_ACCESS.hubAccess.map(cleanStr) : [];
+    const isUserInList = data.items && data.items.some(item => userHubs.includes(cleanStr(item.hub)));
+
+    if (!isUserInList) {
+      const activeWeekStr = data.activeWeek ? `Minggu ke-${data.activeWeek}` : (STATE.week ? `Minggu ke-${STATE.week}` : 'minggu terpilih ini');
+      const userHubName = (USER_ACCESS && USER_ACCESS.hubAccess && USER_ACCESS.hubAccess.length > 0) ? USER_ACCESS.hubAccess.join(', ') : 'Hub Anda';
+
+      document.getElementById('pageContent').innerHTML = `
+        <div class="card" style="padding: 40px 20px; text-align: center; max-width: 600px; margin: 20px auto; border-top: 4px solid var(--primary);">
+          <div style="display:flex; justify-content:center; margin-bottom:16px; color:var(--primary);">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          </div>
+          <h3 style="font-size: 18px; font-weight: 800; color: var(--text-main); margin-bottom: 8px;">Akses Terkunci / Performa Aman</h3>
+          <p style="font-size: 13px; color: var(--text-muted); line-height: 1.6; margin-bottom: 20px;">
+            Hub <b>[${esc(userHubName)}]</b> tidak termasuk dalam daftar <b>10 Hub Prioritas Hypercare</b> pada <b>${esc(activeWeekStr)}</b>.
+          </p>
+          <div style="background: var(--ok-bg); color: var(--ok-text); padding: 12px 16px; border-radius: 10px; font-size: 12px; font-weight: 600; display: inline-flex; align-items:center; gap:6px;">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg> Performa minggu ini berada dalam kondisi baik & aman.
+          </div>
+        </div>`;
+      return;
+    }
+  }
+
+  renderRekomendasiHub(data);
+}
+
+function renderRekomendasiHub(data) {
+  if (!data.items || !data.items.length) return showEmpty('Tidak ada data Hypercare untuk filter ini.');
+  
+  const isWeekly = data.source === 'weekly';
+  const sourceLabel = isWeekly ? 'Data Mingguan' : 'Data Bulanan';
+  let periodLabel = data.activeWeek ? `Minggu ke-${data.activeWeek}` : (data.activeMonth ? formatMonthLabel(data.activeMonth) : 'Semua Periode');
+  
+  const cutoff = getHypercareTargetCutoff();
+  const isCLorPIC = USER_ACCESS && (USER_ACCESS.role === 'City Lead' || USER_ACCESS.role === 'PIC');
+
+  let html = `
+    <div class="card" style="margin-bottom:16px; display:flex; flex-wrap:wrap; gap:16px; align-items:center; justify-content:space-between">
+      <div>
+        <h3 style="margin-bottom:4px; font-size:16px; display:flex; align-items:center; gap:8px;">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--crit-text);"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg> Hypercare: 10 Hub Prioritas (${STATE.mode})
+        </h3>
+        <div class="subtitle">Sumber: <b>${sourceLabel}</b> · Periode: <b>${periodLabel}</b> · Target Cutoff: <b>${cutoff.toFixed(2)}%</b></div>
+      </div>
+      
+      ${isCLorPIC ? `
+      <div style="display:flex; align-items:center; gap:8px; background:var(--bg); padding:6px 12px; border-radius:8px; border:1px solid var(--border);">
+        <label for="uiCutoffInput" style="font-size:12px; font-weight:700; color:var(--text-main); display:flex; align-items:center; gap:4px;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg> Target Cutoff ${STATE.mode}:
+        </label>
+        <input type="number" id="uiCutoffInput" value="${cutoff}" step="0.01" min="0" max="100" style="width:70px; padding:4px 8px; border-radius:6px; border:1px solid var(--border); font-weight:800; text-align:center; background:var(--card-solid); color:var(--text-main);" />
+        <span style="font-size:12px; font-weight:700;">%</span>
+        <button onclick="updateHypercareCutoffFromUI(document.getElementById('uiCutoffInput').value, this)" style="background:var(--primary); color:white; border:none; padding:5px 12px; border-radius:6px; font-size:11px; font-weight:700; cursor:pointer;">
+          Terapkan
+        </button>
+      </div>
+      ` : ''}
+    </div>
+    <div style="display:flex; flex-direction:column; gap:16px">
+  `;
+  
+  data.items.forEach((hubData, index) => {
+    const scoreVal = hubData.score || 0;
+    const scoreColor = scoreVal >= cutoff ? 'var(--ok-text)' : 'var(--crit-text)';
+    
+    html += `
+      <div class="card" style="border-left:4px solid var(--crit-text); padding:0; overflow:hidden;">
+        <div style="padding:16px; background:var(--bg); border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
+          <div style="display:flex; align-items:center; gap:12px;">
+            <div style="width:32px; height:32px; border-radius:50%; background:var(--text-main); color:white; display:grid; place-items:center; font-weight:700; font-size:14px;">${index + 1}</div>
+            <div>
+              <h4 style="font-size:16px; color:var(--text-main); margin-bottom:2px;">${esc(hubData.hub)}</h4>
+              <div class="subtitle">Periode: Minggu ${esc(hubData.group)}</div>
+            </div>
+          </div>
+          <div style="text-align:right">
+            <div class="subtitle" style="margin-bottom:2px;">Skor Total</div>
+            <div style="font-size:20px; font-weight:800; color:${scoreColor}">${hubData.score !== null ? hubData.score.toFixed(2) + '%' : '—'}</div>
+          </div>
+        </div>
+        <div style="padding:16px;">
+          <div style="font-weight:700; font-size:13px; color:var(--text-main); margin-bottom:12px; display:flex; align-items:center; gap:6px;">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--crit-text);"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> Fokus Perbaikan (${hubData.issues.length} Metrik < ${cutoff.toFixed(2)}%)
+          </div>
+          ${hubData.issues.length === 0 ? `
+            <div style="padding:12px; background:var(--ok-bg); color:var(--ok-text); border-radius:6px; font-size:13px; display:flex; align-items:center; gap:6px;">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg> Seluruh metrik pada periode ini sudah mencapai target ${cutoff.toFixed(2)}%.
+            </div>
+          ` : `
+            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:16px;">
+              ${hubData.issues.map(issue => {
+                const formId = `form_${esc(hubData.hub)}_${esc(hubData.group)}_${issue.key}`.toLowerCase().replace(/[^a-z0-9]/g, '_');
+                return `
+                  <div data-hc data-hub="${esc(hubData.hub)}" data-week="${esc(hubData.group)}" data-key="${esc(issue.key)}" data-fid="${esc(formId)}" style="background:var(--card); border:1px solid var(--border); border-radius:12px; padding:14px; display:flex; flex-direction:column; justify-content:space-between;">
+                    <div>
+                      <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:8px;">
+                        <b style="font-size:13px; color:var(--text-main)">${esc(issue.label)}</b>
+                        <span class="badge kritis" style="font-size:11px; white-space:nowrap;">${issue.value.toFixed(2)}%</span>
+                      </div>
+                      <div style="font-size:11px; color:var(--crit-text); margin-bottom:12px; font-weight:600;">Gap: -${issue.gap.toFixed(2)}%</div>
+
+                      <div style="background:var(--bg); padding:12px; border-radius:8px; border:1px solid var(--border); margin-bottom:10px;">
+                        <label style="display:flex; align-items:center; gap:4px; font-size:11px; font-weight:700; color:var(--text-muted); margin-bottom:4px;">
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> ROOT CAUSE
+                        </label>
+                        <select id="rc_${formId}" class="select" style="width:100%; background:var(--card-solid); border:1px solid var(--border); border-radius:6px; padding:6px 8px; font-size:12px; margin-bottom:10px;">
+                          <option value="">-- Pilih Root Cause --</option>
+                          <option value="Plan" ${issue.rootCause === 'Plan' ? 'selected' : ''}>1. Plan (Perencanaan/Penjadwalan)</option>
+                          <option value="Eksekusi" ${issue.rootCause === 'Eksekusi' ? 'selected' : ''}>2. Eksekusi (Kedisiplinan Lapangan)</option>
+                          <option value="Manpower / SDM" ${issue.rootCause === 'Manpower / SDM' ? 'selected' : ''}>3. Manpower / SDM (Kurir/Operator)</option>
+                          <option value="Sistem / IT" ${issue.rootCause === 'Sistem / IT' ? 'selected' : ''}>4. Kendala Sistem / Aplikasi</option>
+                          <option value="Fasilitas & Kendaraan" ${issue.rootCause === 'Fasilitas & Kendaraan' ? 'selected' : ''}>5. Fasilitas & Kendaraan Hub</option>
+                          <option value="Lainnya" ${issue.rootCause === 'Lainnya' ? 'selected' : ''}>6. Lainnya</option>
+                        </select>
+
+                        <label style="display:flex; align-items:center; gap:4px; font-size:11px; font-weight:700; color:var(--text-muted); margin-bottom:4px;">
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg> ACTION PLAN
+                        </label>
+                        <textarea id="ap_${formId}" rows="3" placeholder="Tuliskan uraian action plan perbaikan di sini..." style="width:100%; background:var(--card-solid); border:1px solid var(--border); border-radius:6px; padding:8px; font-size:12px; font-family:inherit; resize:vertical; color:var(--text-main); margin-bottom:10px;">${esc(issue.actionPlan)}</textarea>
+
+                        <div class="hc-meta">
+                          <select id="st_${formId}">
+                            ${['Open','In progress','Done'].map(s => `<option value="${s}" ${(issue.status || 'Open') === s ? 'selected' : ''}>${s}</option>`).join('')}
+                          </select>
+                          <input type="date" id="dd_${formId}" value="${esc(issue.dueDate)}" title="Target tanggal">
+                          <input class="hc-pic" id="pic_${formId}" placeholder="PIC (nama penanggung jawab)" value="${esc(issue.pic)}">
+                        </div>
+                        <div class="hc-save" id="sv_${formId}">Tersimpan otomatis saat diubah</div>
+                        
+                        ${issue.updatedBy ? `<div style="font-size:10px; color:var(--text-muted); margin-top:6px; text-align:right;">Diperbarui oleh: <b>${esc(issue.updatedBy.split('@')[0])}</b> (${esc(issue.updatedAt)})</div>` : ''}
+                      </div>
+                    </div>
+                  </div>
+                `;
+              }).join('')}
+            </div>
+          `}
+        </div>
+      </div>
+    `;
+  });
+  html += `</div>`;
+  document.getElementById('pageContent').innerHTML = html;
+  setUpdated();
+}
+
+const HC_TIMERS = {};
+function hcAuto(hub, week, key, fid) {
+  clearTimeout(HC_TIMERS[fid]);
+  const sv = document.getElementById('sv_' + fid); if (sv) sv.textContent = 'Menyimpan…';
+  HC_TIMERS[fid] = setTimeout(() => {
+    const g = id => (document.getElementById(id + '_' + fid) || {}).value || '';
+    const wyEl = document.getElementById('wy_' + fid), wy = wyEl ? wyEl.value : null;   // null = form lama tanpa 5 Why
+    google.script.run
+      .withSuccessHandler(res => {
+        if (res && res.success) {
+          if (sv) sv.textContent = 'Tersimpan ' + new Date().toLocaleTimeString('id-ID');
+          Object.keys(FRONTEND_CACHE).forEach(k => { if (k.startsWith('rekomendasi_')) delete FRONTEND_CACHE[k]; });
+        } else { if (sv) sv.textContent = 'Gagal menyimpan'; toast(res ? res.error : 'Gagal menyimpan.', true); }
+      })
+      .withFailureHandler(e => { if (sv) sv.textContent = 'Gagal menyimpan'; toast((e && e.message) || 'Gagal menyimpan.', true); })
+      .apiSaveHypercareInput(hub, week, key, g('rc'), g('ap'), g('st'), g('dd'), g('pic'), wy);
+  }, 900);
+}
+
+/* Autosave via event delegation (tanpa inline handler): berlaku untuk Hypercare lama & V2 */
+(function () {
+  const root = document.getElementById('pageContent'); if (!root) return;
+  const handler = e => {
+    const f = e.target.closest && e.target.closest('[data-hc]');
+    if (!f || !/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
+    const d = f.dataset;
+    hcAuto(d.hub, d.week, d.key, d.fid);   // hcAuto sudah debounce, event ganda aman
+  };
+  root.addEventListener('input', handler);
+  root.addEventListener('change', handler);
+})();
+</script>

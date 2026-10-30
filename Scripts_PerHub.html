@@ -1,0 +1,15 @@
+<script>
+function loadPerHub() {
+  const key = `perhub_${STATE.mode}_${STATE.segment}_${STATE.hub}_${STATE.date}_${STATE.week}_${STATE.month}`;
+  callApiCached(key, 'apiGetPerHub',
+    [STATE.mode, STATE.segment, STATE.hub, STATE.date, STATE.week, STATE.month],
+    'perhub', renderPerHub);
+}
+
+function renderPerHub(data) {
+  if (!data.items || !data.items.length) return showEmpty();
+  const rows = data.items.map((it, i) => `<tr><td>${i+1}</td><td><b>${esc(it.hub)}</b></td><td>${esc(it.metricLabel)}</td><td class="cell ${it.status}">${it.achievement.toFixed(1)}%</td><td>${it.target}%</td><td style="color:${it.selisih < 0 ? 'var(--crit-text)' : 'var(--ok-text)'}; font-weight:700">${it.selisih > 0 ? '+' : ''}${it.selisih.toFixed(1)}</td><td class="subtitle" style="font-size:11px; max-width:280px; white-space:normal">${esc(it.action || '—')}</td></tr>`).join('');
+  document.getElementById('pageContent').innerHTML = `<div class="heatmap-wrap"><table class="heatmap-table"><thead><tr><th>#</th><th>Hub</th><th>Metrik</th><th>Achv</th><th>Target</th><th>Selisih</th><th>Saran</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  setUpdated();
+}
+</script>

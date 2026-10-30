@@ -1,0 +1,130 @@
+<script>
+/* ═══ UPDATE: toast, filter, tabel interaktif, sparkline, autosave Hypercare ═══ */
+function toast(msg, err) {
+  let w = document.getElementById('toastWrap');
+  if (!w) { w = document.createElement('div'); w.id = 'toastWrap'; w.className = 'toast-wrap'; w.setAttribute('role', 'status'); w.setAttribute('aria-live', 'polite'); document.body.appendChild(w); }
+  const t = document.createElement('div'); t.className = 'toast' + (err ? ' err' : ''); t.innerHTML = (err ? ICON.x : ICON.check) + ' '; t.appendChild(document.createTextNode(msg.replace(/^(Berhasil|Gagal): ?/, '$1: ')));
+  w.appendChild(t); setTimeout(() => t.remove(), err ? 6000 : 4000);
+}
+function toggleFilters() { document.getElementById('filterGroup').classList.toggle('collapsed'); syncFilterToggle_(); }
+function renderChips() {
+  const el = document.getElementById('filterChips'); if (!el) return;
+  const p = [];
+  if (STATE.hub) p.push('Hub: ' + STATE.hub);
+  if (STATE.month) p.push('Bulan: ' + formatMonthLabel(STATE.month));
+  if (STATE.week) p.push('Minggu: ' + STATE.week);
+  if (STATE.date) p.push('Tanggal: ' + STATE.date);
+  if (STATE.mode === 'FM' && STATE.segment !== 'blended') p.push('Tipe: ' + STATE.segment);
+  el.innerHTML = p.length ? p.map(t => '<span class="chip">' + esc(t) + '</span>').join('') + '<button class="btn-trend-tab" onclick="resetFilters()">Reset</button>' : '';
+}
+function resetFilters() {
+  const full = USER_ACCESS && (USER_ACCESS.role === 'City Lead' || USER_ACCESS.role === 'PIC' || (USER_ACCESS.hubAccess || []).includes('Semua'));
+  STATE.hub = full ? '' : ((FILTER_OPTIONS.hubs || [])[0] || '');
+  STATE.month = ''; STATE.week = ''; STATE.date = ''; STATE.segment = 'blended';
+  ['monthFilter', 'weekFilter', 'dateFilter'].forEach(id => { document.getElementById(id).value = ''; });
+  document.getElementById('hubFilter').value = STATE.hub;
+  const sg = document.getElementById('segmentFilter'); if (sg) sg.value = 'blended';
+  initPeriodPicker(false);
+  populateWeekFilter(); populateDateFilter(); renderPage();
+}
+function updateMetricVisibility() {
+  const w = document.getElementById('metricWrapper');
+  if (w) w.style.display = ['harian', 'toplow', 'trendweekly'].includes(STATE.page) ? 'flex' : 'none';
+}
+function enhanceTables() {
+  document.querySelectorAll('#pageContent .heatmap-wrap').forEach(wrap => {
+    const t = wrap.querySelector('table'); if (!t || t.dataset.enh || !t.tHead) return; t.dataset.enh = 1;
+    const body = t.tBodies[0]; if (!body) return;
+    const rows = () => Array.from(body.rows);
+    const num = c => { const n = parseFloat(String(c.textContent).replace(/[^0-9.\-]/g, '')); return isNaN(n) ? null : n; };
+    const bar = document.createElement('div'); bar.className = 'tbl-tools';
+    if (rows().length > 6) {
+      const inp = document.createElement('input'); inp.className = 'tbl-search'; inp.placeholder = 'Cari hub / metrik…';
+      inp.addEventListener('input', e => {
+        const q = e.target.value.toLowerCase();
+        rows().forEach(r => { r.style.display = r.cells[0].textContent.toLowerCase().includes(q) ? '' : 'none'; });
+      });
+      bar.appendChild(inp);
+    }
+    const csvBtn = document.createElement('button'); csvBtn.className = 'btn-trend-tab'; csvBtn.innerHTML = ICON.download + ' CSV';
+    csvBtn.addEventListener('click', () => exportTableCsv(t)); bar.appendChild(csvBtn);
+    wrap.parentNode.insertBefore(bar, wrap);
+    Array.from(t.tHead.rows[0].cells).forEach((th, ci) => {
+      th.classList.add('sortable');
+      th.addEventListener('click', () => {
+        const asc = !th.classList.contains('asc');
+        t.querySelectorAll('th').forEach(x => x.classList.remove('asc', 'desc'));
+        th.classList.add(asc ? 'asc' : 'desc');
+        rows().sort((a, b) => {
+          const x = num(a.cells[ci]), y = num(b.cells[ci]);
+          const r = (x !== null && y !== null) ? x - y : a.cells[ci].textContent.localeCompare(b.cells[ci].textContent);
+          return asc ? r : -r;
+        }).forEach(r => body.appendChild(r));
+      });
+    });
+    if (rows().length >= 3) {
+      for (let ci = 1; ci < t.tHead.rows[0].cells.length; ci++) {
+        let min = null, cell = null;
+        rows().forEach(r => {
+          const c = r.cells[ci];
+          if (c && c.classList.contains('cell')) { const v = num(c); if (v !== null && (min === null || v < min)) { min = v; cell = c; } }
+        });
+        if (cell && min < TARGET_THRESHOLD) cell.classList.add('worst');
+      }
+    }
+  });
+}
+function spark(vals) {
+  const v = (vals || []).map(x => (x === null || x === undefined || isNaN(x)) ? null : Number(x));
+  const ok = v.filter(x => x !== null); if (ok.length < 2) return '—';
+  const mn = Math.min(...ok), rg = (Math.max(...ok) - mn) || 1, W = 70, H = 22, st = W / (v.length - 1);
+  const pts = v.map((x, i) => x === null ? null : (i * st).toFixed(1) + ',' + (H - 2 - ((x - mn) / rg) * (H - 4)).toFixed(1)).filter(Boolean).join(' ');
+  const up = ok[ok.length - 1] >= ok[0];
+  return '<svg width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '"><polyline fill="none" stroke="' + (up ? '#10b981' : '#f43f5e') + '" stroke-width="2" points="' + pts + '"/></svg>';
+}
+
+let INIT_USED = false;
+function copyText(text, okMsg) {
+  const fallback = () => {
+    const ta = document.createElement('textarea'); ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    let ok = false; try { ok = document.execCommand('copy'); } catch (e) {}
+    ta.remove(); toast(ok ? okMsg : 'Gagal menyalin, salin manual.', !ok);
+  };
+  if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).then(() => toast(okMsg), fallback);
+  else fallback();
+}
+function exportTableCsv(t) {
+  const q = s => '"' + String(s).replace(/\s+/g, ' ').trim().replace(/"/g, '""') + '"';
+  const lines = [Array.from(t.tHead.rows[0].cells).map(c => q(c.textContent)).join(',')];
+  Array.from(t.tBodies[0].rows).filter(r => r.style.display !== 'none').forEach(r => lines.push(Array.from(r.cells).map(c => q(c.textContent)).join(',')));
+  const blob = new Blob(['\ufeff' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+  a.download = 'jtt07_' + STATE.mode + '_' + STATE.page + '.csv'; document.body.appendChild(a); a.click(); a.remove();
+  toast('CSV diunduh (' + (lines.length - 1) + ' baris)');
+}
+function copyLink() {
+  google.script.run
+    .withSuccessHandler(r => {
+      if (!r || !r.success || !r.data.url) { toast('Gagal membuat tautan.', true); return; }
+      const q = new URLSearchParams({ m: STATE.mode, p: STATE.page, hub: STATE.hub, month: STATE.month, week: STATE.week, date: STATE.date, seg: STATE.segment });
+      copyText(r.data.url + '?' + q.toString(), 'Tautan disalin (beserta filter)');
+    })
+    .withFailureHandler(() => toast('Gagal membuat tautan.', true)).apiGetAppUrl();
+}
+function applyInitState() {
+  const s = window.INIT_STATE;
+  if (INIT_USED || !s || !s.m || s.m !== STATE.mode) return;
+  INIT_USED = true;
+  const setSel = (id, v) => { const el = document.getElementById(id); if (el && v !== undefined && Array.from(el.options).some(o => o.value === v)) { el.value = v; return true; } return false; };
+  if (setSel('hubFilter', s.hub)) STATE.hub = s.hub;
+  if (s.seg && setSel('segmentFilter', s.seg)) STATE.segment = s.seg;
+  if (s.month !== undefined) { STATE.month = setSel('monthFilter', s.month) ? s.month : ''; STATE.week = ''; STATE.date = ''; populateWeekFilter(); }
+  if (s.week && setSel('weekFilter', s.week)) { STATE.week = s.week; populateDateFilter(); }
+  if (s.date && setSel('dateFilter', s.date)) STATE.date = s.date;
+  if (s.p) {
+    const b = document.querySelector('#mainNav button[data-page="' + s.p + '"]');
+    if (b && b.style.display !== 'none') { document.querySelectorAll('#mainNav button').forEach(x => x.classList.remove('active')); b.classList.add('active'); STATE.page = s.p; }
+  }
+}
+</script>

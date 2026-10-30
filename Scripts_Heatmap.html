@@ -1,0 +1,33 @@
+<script>
+/* ─── UI PATCH v3 ─── */
+
+/* A) Intensitas heatmap + legenda */
+function applyHeatIntensity_() {
+  const root = document.getElementById('pageContent'); if (!root) return;
+  const lo = 90, hi = WARN_THRESHOLD;
+  root.querySelectorAll('td.cell.kritis:not([data-sev]), td.cell.fail:not([data-sev])').forEach(td => {
+    const n = parseFloat(String(td.textContent).replace(/[^0-9.\-]/g, ''));
+    if (isNaN(n)) return;
+    const sev = Math.max(0, Math.min(1, (hi - n) / (hi - lo)));
+    td.style.setProperty('--sev', sev.toFixed(2)); td.dataset.sev = sev.toFixed(2);
+  });
+  root.querySelectorAll('.heatmap-wrap').forEach(w => {
+    if (!w.querySelector('td.cell')) return;
+    const prev = w.previousElementSibling;
+    if (prev && prev.classList.contains('heat-legend')) return;
+    const lg = document.createElement('div'); lg.className = 'heat-legend';
+    lg.innerHTML = '<span><i class="lg-ok"></i>≥ ' + TARGET_THRESHOLD + '%</span>' +
+      '<span><i class="lg-warn"></i>' + WARN_THRESHOLD + '–' + TARGET_THRESHOLD + '%</span>' +
+      '<span><i class="lg-crit"></i>&lt; ' + WARN_THRESHOLD + '% (makin pekat = makin jauh)</span>';
+    w.insertAdjacentElement('beforebegin', lg);
+  });
+}
+(function () {
+  const root = document.getElementById('pageContent'); if (!root) return;
+  let pending = false;
+  new MutationObserver(() => {
+    if (pending) return; pending = true;
+    requestAnimationFrame(() => { pending = false; applyHeatIntensity_(); });
+  }).observe(root, { childList: true, subtree: true });
+})();
+</script>

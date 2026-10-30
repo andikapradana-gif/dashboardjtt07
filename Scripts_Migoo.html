@@ -1,0 +1,187 @@
+<script>
+/* ═══ ANALISIS DI MIGOO — paket data + instruksi untuk analisis root cause ═══
+   Belum ada koneksi langsung ke Migoo. Dashboard menyiapkan teks Markdown dari data yang sedang tampil
+   (Hypercare = paling lengkap, Ringkasan = ringkas), lalu pengguna menyalin / mengunggahnya ke Migoo. */
+const MGO = { src: '', msgEdited: false, opener: null, keyHandler: null };
+
+const MGO_RULES = 'Aturan: bedakan jelas antara FAKTA (langsung dari data di bawah) dan HIPOTESIS (dugaan Anda). Jangan mengarang angka, nama hub, atau penyebab yang tidak didukung data. Bila data kurang untuk menyimpulkan, tulis data apa yang kurang. Gunakan bahasa Indonesia yang ringkas.';
+
+const MGO_TYPES = {
+  hypercare: {
+    rca:      { label: 'Analisis root cause lengkap', ask: 'Lakukan analisis root cause atas data Hypercare di bawah. Susun: (1) Pola lintas hub: metrik yang muncul di banyak hub dan hub yang punya banyak metrik bermasalah. (2) Untuk tiap metrik prioritas: 2–3 hipotesis penyebab beserta alasannya dari data (nilai, gap, perubahan WoW), urut dari yang paling mungkin. (3) Pertanyaan atau data tambahan yang perlu dicek ke hub untuk membuktikan atau menggugurkan tiap hipotesis. (4) Usulan action plan per metrik: langkah, PIC (peran), dan ukuran keberhasilan.' },
+    pola:     { label: 'Cari pola lintas hub', ask: 'Cari pola dari data Hypercare di bawah: kelompokkan hub yang bermasalah di metrik yang sama, bandingkan hub yang membaik dan memburuk (WoW), lalu tunjukkan metrik mana yang kemungkinan punya penyebab bersama (sistemik) dan mana yang penyebabnya lokal per hub. Jelaskan dasar tiap kesimpulan.' },
+    validasi: { label: 'Uji root cause yang diisi hub', ask: 'Review root cause dan action plan yang sudah diisi hub pada data di bawah. Untuk tiap isian: nilai apakah penyebab yang dipilih konsisten dengan angkanya (nilai, gap, tren WoW), apakah action plan menjawab penyebab itu dan terukur, lalu beri saran perbaikan. Tandai hub yang belum mengisi.' },
+    aksi:     { label: 'Susun rencana tindakan 2 minggu', ask: 'Susun rencana tindakan 2 minggu dari data Hypercare di bawah, diurutkan menurut dampak ke skor. Untuk tiap tindakan: apa, siapa (peran), kapan, dan indikator berhasil. Pakai root cause yang sudah diisi hub bila ada, dan tandai tindakan yang masih bergantung pada hipotesis.' }
+  },
+  ringkasan: {
+    rca:     { label: 'Analisis root cause awal', ask: 'Lakukan analisis root cause awal atas metrik di bawah target pada data di bawah. Untuk tiap metrik: 2–3 hipotesis penyebab beserta alasannya, pertanyaan yang perlu dijawab hub untuk membuktikannya, dan data tambahan yang diperlukan. Data ini ringkasan (hanya hub terendah per metrik), jadi sebutkan batas kesimpulan yang bisa ditarik.' },
+    slide:   { label: 'Slide presentasi (5–7 slide)', ask: 'Buatkan slide presentasi 5–7 slide untuk rapat evaluasi KPI: ringkasan skor dan tren, metrik yang mencapai target, metrik di bawah target beserta hub terendah, prioritas perbaikan, dan langkah berikutnya.' },
+    laporan: { label: 'Laporan singkat 1 halaman', ask: 'Buatkan laporan singkat satu halaman untuk atasan: kondisi KPI saat ini, 3 temuan utama, prioritas perbaikan, dan rekomendasi tindak lanjut.' }
+  }
+};
+
+const mgoNum_ = v => (v === null || v === undefined || isNaN(v)) ? null : Number(v);
+const mgoPct_ = v => mgoNum_(v) === null ? '—' : Number(v).toFixed(2) + '%';
+const mgoCell_ = s => String(s == null ? '' : s).replace(/\|/g, '/').replace(/\s+/g, ' ').trim();
+const mgoSigned_ = v => mgoNum_(v) === null ? '—' : (v > 0 ? '+' : '') + Number(v).toFixed(2) + ' pt';
+
+/* ── Data dari Ringkasan (ringkas) ── */
+function mgoRingkasanData_() {
+  const d = LAST_RINGKASAN; if (!d || !d.summary || !d.summary.length) return '';
+  const T = TARGET_THRESHOLD, isLM = STATE.mode === 'LM', summary = d.summary, crit = d.criticalAnalysis || [];
+  let avg = mgoNum_(d.overallScore);
+  if (avg === null) { const ok = summary.map(m => mgoNum_(m.blended)).filter(v => v !== null); avg = ok.length ? ok.reduce((a, b) => a + b, 0) / ok.length : null; }
+  const tl = { tercapai: 'Tercapai', waspada: 'Waspada', kritis: 'Kritis', nodata: 'Tidak ada data' };
+  const cnt = { tercapai: 0, waspada: 0, kritis: 0, nodata: 0 };
+  summary.forEach(m => { cnt[tier(mgoNum_(m.blended))]++; });
+  const L = [];
+  L.push('# Data KPI JTT-07 · ' + (isLM ? 'Last Mile (LM)' : 'First Mile (FM)'));
+  L.push('- Filter: ' + getFilterLabel());
+  L.push('- Dibuat dari dashboard: ' + new Date().toLocaleString('id-ID', { dateStyle: 'long', timeStyle: 'short' }));
+  L.push('- Target minimal: ' + T.toFixed(2) + '% · batas waspada: ' + WARN_THRESHOLD.toFixed(2) + '%');
+  L.push('- ' + (d.overallSource === 'score' ? 'Skor KPI rata-rata hub' : 'Rata-rata KPI berbobot') + ': ' + (avg === null ? '—' : avg.toFixed(2) + '%'));
+  if (d.wow && mgoNum_(d.wow.delta) !== null) L.push('- Perubahan vs ' + d.wow.prevWeek + ': ' + mgoSigned_(d.wow.delta));
+  L.push('- Status ' + summary.length + ' metrik: ' + cnt.tercapai + ' tercapai, ' + cnt.waspada + ' waspada, ' + cnt.kritis + ' kritis' + (cnt.nodata ? ', ' + cnt.nodata + ' tanpa data' : ''));
+  L.push('', '## Performa per metrik');
+  L.push(isLM ? '| Metrik | Capaian | Status |' : '| Metrik | Blended | Reguler | High | Status |');
+  L.push(isLM ? '|---|---|---|' : '|---|---|---|---|---|');
+  summary.forEach(m => {
+    const st = tl[tier(mgoNum_(m.blended))];
+    L.push(isLM ? '| ' + mgoCell_(m.label) + ' | ' + mgoPct_(m.blended) + ' | ' + st + ' |'
+                : '| ' + mgoCell_(m.label) + ' | ' + mgoPct_(m.blended) + ' | ' + mgoPct_(m.regular) + ' | ' + mgoPct_(m.high) + ' | ' + st + ' |');
+  });
+  L.push('', '## Metrik di bawah target (urut prioritas)');
+  if (!crit.length) L.push('Semua metrik sudah mencapai target ' + T.toFixed(2) + '%.');
+  crit.forEach((x, i) => {
+    const act = String(x.clearSuggestion || '').split('Tindakan: ')[1] || x.clearSuggestion || '';
+    L.push((i + 1) + '. ' + mgoCell_(x.metricLabel) + ': ' + mgoPct_(x.blendedScore) + ' (kurang ' + (T - x.blendedScore).toFixed(2) + ' pt dari target)' +
+      (x.worstHub ? ' · hub terendah: ' + mgoCell_(x.worstHub) + (mgoNum_(x.worstVal) !== null ? ' (' + Number(x.worstVal).toFixed(1) + '%)' : '') : ''));
+    if (act) L.push('   - Aksi yang disarankan dashboard: ' + mgoCell_(act));
+  });
+  return L.join('\n');
+}
+
+/* ── Data dari Hypercare v2 (lengkap: per hub, per metrik, WoW, bobot, root cause tersimpan) ── */
+function mgoHypercareData_() {
+  const d = HCV2.last; if (!d || !d.items || !d.items.length) return '';
+  const el = id => document.getElementById(id);
+  const val = (id, fb) => { const e = el(id); return e ? e.value : (fb || ''); };   // ambil isian terbaru di layar
+  const fidOf = (h, is) => ('v2_' + h.hub + '_' + h.group + '_' + is.key).toLowerCase().replace(/[^a-z0-9]/g, '_');
+
+  const freq = {}, rcDist = {};
+  d.items.forEach(h => h.issues.forEach(is => {
+    const f = fidOf(h, is), rc = val('rc_' + f, is.rootCause);
+    (freq[is.label] = freq[is.label] || { n: 0, gap: 0, down: 0 });
+    freq[is.label].n++; freq[is.label].gap += is.gap; if (mgoNum_(is.delta) !== null && is.delta < -0.005) freq[is.label].down++;
+    if (rc) rcDist[rc.slice(0, 60)] = (rcDist[rc.slice(0, 60)] || 0) + 1;
+  }));
+
+  const L = [];
+  L.push('# Data Hypercare JTT-07 · ' + (d.mode === 'LM' ? 'Last Mile (LM)' : 'First Mile (FM)'));
+  L.push('- Periode: ' + d.week + (d.prevWeek ? ' (pembanding: ' + d.prevWeek + ')' : ''));
+  L.push('- Cutoff Hypercare: ' + Number(d.cutoff).toFixed(2) + '%');
+  L.push('- Dibuat dari dashboard: ' + new Date().toLocaleString('id-ID', { dateStyle: 'long', timeStyle: 'short' }));
+  if (!d.restricted) {
+    L.push('- Hub di bawah cutoff: ' + d.hubsBelowCutoff + ' dari ' + d.hubCount + ' hub · skor rata-rata saat ini: ' + mgoPct_(d.currentAvg));
+    L.push('- Daftar di bawah = ' + d.items.length + ' hub prioritas (maks. ' + d.maxMetrics + ' metrik per hub), diurutkan dari potensi kenaikan skor terbesar.');
+  } else L.push('- Data terbatas pada hub milik pengguna.');
+  L.push('- Dampak = bobot metrik × gap ÷ total bobot (estimasi kenaikan skor hub bila metrik mencapai cutoff).');
+
+  L.push('', '## Pola otomatis dari dashboard');
+  const fk = Object.keys(freq).sort((a, b) => freq[b].n - freq[a].n || freq[b].gap - freq[a].gap);
+  L.push('Metrik yang bermasalah di banyak hub:');
+  fk.forEach(k => L.push('- ' + mgoCell_(k) + ': ' + freq[k].n + ' hub · rata-rata gap ' + (freq[k].gap / freq[k].n).toFixed(2) + ' pt · ' + freq[k].down + ' hub memburuk vs minggu lalu'));
+  const rk = Object.keys(rcDist);
+  L.push('Root cause yang sudah diisi hub: ' + (rk.length ? rk.map(k => k + ' (' + rcDist[k] + ')').join(', ') : 'belum ada yang diisi'));
+
+  L.push('', '## Detail per hub');
+  d.items.forEach((h, i) => {
+    L.push('', '### ' + (i + 1) + '. ' + mgoCell_(h.hub) + ' — skor hub ' + mgoPct_(h.score) + ' · ' + h.belowCount + ' metrik di bawah cutoff · potensi +' + h.gain.toFixed(2) + ' pt');
+    h.issues.forEach(is => {
+      const f = fidOf(h, is);
+      const rc = val('rc_' + f, is.rootCause), ap = val('ap_' + f, is.actionPlan), st = val('st_' + f, is.status) || 'Open';
+      const dd = val('dd_' + f, is.dueDate), pic = val('pic_' + f, is.pic);
+      L.push('- **' + mgoCell_(is.label) + '**: ' + mgoPct_(is.value) + ' (gap -' + is.gap.toFixed(2) + ' pt)' +
+        ' · minggu lalu ' + (mgoNum_(is.prevValue) === null ? 'tidak ada data' : mgoPct_(is.prevValue) + ' (' + mgoSigned_(is.delta) + ' WoW)') +
+        ' · bobot ' + is.weight + ' (' + is.weightPct.toFixed(1) + '% skor) · dampak +' + is.impact.toFixed(2) + ' pt');
+      L.push('  - Root cause dari hub: ' + (rc ? mgoCell_(rc) : 'belum diisi'));
+      L.push('  - Action plan hub: ' + (ap ? mgoCell_(ap) : 'belum diisi'));
+      L.push('  - Status: ' + st + ' · PIC: ' + (pic ? mgoCell_(pic) : '—') + ' · target: ' + (dd || '—'));
+    });
+  });
+  return L.join('\n');
+}
+
+function mgoSource_() { return STATE.page === 'rekomendasihub2' ? 'hypercare' : 'ringkasan'; }
+function mgoPack_() {
+  const src = MGO.src, sel = document.getElementById('mgoType'), types = MGO_TYPES[src];
+  const t = types[sel && types[sel.value] ? sel.value : Object.keys(types)[0]];
+  const data = src === 'hypercare' ? mgoHypercareData_() : mgoRingkasanData_();
+  if (!data) return '';
+  return '## Permintaan\n' + t.ask + '\n' + MGO_RULES + '\n\n---\n\n' + data + '\n';
+}
+function mgoRefresh_() { const ta = document.getElementById('mgoText'); if (ta && !MGO.msgEdited) ta.value = mgoPack_(); }
+
+function openMigoo(opener) {
+  MGO.src = mgoSource_(); MGO.msgEdited = false; MGO.opener = opener || document.activeElement;
+  const ready = MGO.src === 'hypercare' ? (HCV2.last && HCV2.last.items && HCV2.last.items.length) : (LAST_RINGKASAN && LAST_RINGKASAN.summary && LAST_RINGKASAN.summary.length);
+  if (!ready) { toast('Gagal: tunggu data halaman tampil dulu, atau tidak ada data untuk disiapkan.', true); return; }
+  closeMigoo(true);
+  const types = MGO_TYPES[MGO.src];
+  const fld = 'width:100%; background:var(--card-solid); color:var(--text-main); border:1px solid var(--border); border-radius:6px; padding:8px; font-size:13px; font-family:inherit;';
+  const lab = 'display:block; font-size:11px; font-weight:700; color:var(--text-muted); margin:10px 0 4px;';
+  const hint = MGO.src === 'hypercare'
+    ? 'Berisi nilai, gap, perubahan WoW, bobot, serta root cause dan action plan yang sudah diisi hub (termasuk isian terbaru di layar).'
+    : 'Data di Ringkasan hanya memuat hub terendah per metrik. Untuk analisis per hub dan per metrik yang lebih dalam, buka halaman Hypercare lalu pakai tombol yang sama.';
+  const ov = document.createElement('div'); ov.className = 'rpt-overlay'; ov.id = 'mgoOverlay';
+  ov.innerHTML =
+    '<div class="rpt-dialog" role="dialog" aria-modal="true" aria-labelledby="mgoTtl">' +
+      '<div class="rpt-head"><h2 id="mgoTtl">Analisis di Migoo</h2><button type="button" class="btn-icon" id="mgoClose" aria-label="Tutup">' + ICON.x + '</button></div>' +
+      '<div class="rpt-body" style="background:var(--card-solid)">' +
+        '<div class="subtitle">Dashboard belum terhubung langsung ke Migoo. Salin paket di bawah lalu tempel ke Migoo (atau unduh dan unggah sebagai file). ' + esc(hint) + '</div>' +
+        '<label style="' + lab + '" for="mgoType">Jenis analisis</label>' +
+        '<select id="mgoType" style="' + fld + '">' + Object.keys(types).map(k => '<option value="' + k + '">' + esc(types[k].label) + '</option>').join('') + '</select>' +
+        '<label style="' + lab + '" for="mgoText">Instruksi + data (boleh diedit)</label>' +
+        '<textarea id="mgoText" rows="16" style="' + fld + ' resize:vertical; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px;"></textarea>' +
+        '<div class="subtitle" style="margin-top:6px">Hasil Migoo adalah hipotesis, bukan kepastian. Validasi dulu dengan hub sebelum dijadikan root cause resmi. Data KPI dikirim sendiri oleh Anda ke layanan pihak ketiga; pastikan sesuai kebijakan perusahaan.</div>' +
+      '</div>' +
+      '<div class="rpt-actions">' +
+        '<button type="button" class="btn-trend-tab" id="mgoDl">' + ICON.download + ' Unduh .md</button>' +
+        '<button type="button" class="btn-trend-tab" id="mgoCopy">' + ICON.clipboard + ' Salin</button>' +
+        '<button type="button" class="btn-trend-tab active" id="mgoOpen">Salin &amp; buka Migoo</button>' +
+      '</div></div>';
+  document.body.appendChild(ov); document.body.classList.add('rpt-open');
+  const ta = document.getElementById('mgoText'); ta.value = mgoPack_();
+  document.getElementById('mgoType').addEventListener('change', mgoRefresh_);
+  ta.addEventListener('input', () => { MGO.msgEdited = true; });
+  document.getElementById('mgoClose').addEventListener('click', () => closeMigoo());
+  ov.addEventListener('click', e => { if (e.target === ov) closeMigoo(); });
+  document.getElementById('mgoCopy').addEventListener('click', () => copyText(ta.value, 'Paket data untuk Migoo disalin'));
+  document.getElementById('mgoOpen').addEventListener('click', () => { copyText(ta.value, 'Disalin. Tempel di Migoo.'); window.open('https://migoo.ai/', '_blank', 'noopener'); });
+  document.getElementById('mgoDl').addEventListener('click', () => {
+    const dt = new Date(), p2 = n => String(n).padStart(2, '0');
+    const name = 'jtt07_' + STATE.mode.toLowerCase() + '_' + MGO.src + '_untuk-migoo_' + rptSlug_(getFilterLabel()) + '_' + dt.getFullYear() + p2(dt.getMonth() + 1) + p2(dt.getDate()) + '.md';
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([ta.value], { type: 'text/markdown;charset=utf-8;' })); a.download = name;
+    document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    toast('Berkas diunduh: ' + name);
+  });
+  const dlg = ov.querySelector('.rpt-dialog');
+  MGO.keyHandler = e => {
+    if (e.key === 'Escape') { e.preventDefault(); closeMigoo(); return; }
+    if (e.key !== 'Tab') return;
+    const f = Array.from(dlg.querySelectorAll('button,select,textarea')).filter(b => !b.disabled);
+    if (!f.length) return;
+    const first = f[0], last = f[f.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  };
+  document.addEventListener('keydown', MGO.keyHandler);
+  document.getElementById('mgoType').focus();
+}
+function closeMigoo(silent) {
+  const ov = document.getElementById('mgoOverlay'); if (ov) ov.remove();
+  document.body.classList.remove('rpt-open');
+  if (MGO.keyHandler) { document.removeEventListener('keydown', MGO.keyHandler); MGO.keyHandler = null; }
+  if (!silent && MGO.opener && document.body.contains(MGO.opener) && MGO.opener.focus) MGO.opener.focus();
+}
+</script>

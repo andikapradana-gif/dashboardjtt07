@@ -1,0 +1,122 @@
+<script>
+/* B) Snapshot landing + animasi landing (Web Animations API, tanpa pustaka; mati bila prefers-reduced-motion) */
+let SNAP_AT = 0;
+const LP_EASE = 'cubic-bezier(.22,1,.36,1)', LP_SPRING = 'cubic-bezier(.34,1.56,.64,1)';
+const LAST_SNAP = { FM: null, LM: null };
+const LP_DRAW = { FM: 0, LM: 0 };      // timer penggambaran snapshot per kartu
+let LP_RAFS = [];
+let LP_READY_AT = 0;                    // waktu kartu selesai masuk; snapshot baru tampil sesudahnya
+
+function lpReduce() { return !!(window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches); }
+
+function lpAnim(el, from, opt) {
+  if (!el || lpReduce() || !el.animate) return;
+  el.animate([from, { opacity: 1, transform: 'none' }], Object.assign({ fill: 'backwards', easing: LP_EASE, duration: 700 }, opt));
+}
+function lpCount(el, to, dur) {
+  if (!el) return;
+  if (lpReduce()) { el.textContent = to.toFixed(2) + '%'; return; }
+  let t0 = null;
+  function step(t) {
+    if (t0 === null) t0 = t;
+    const p = Math.max(0, Math.min(1, (t - t0) / dur));
+    const e = p === 1 ? 1 : 1 - Math.pow(2, -10 * p);
+    el.textContent = (to * e).toFixed(2) + '%';
+    if (p < 1) LP_RAFS.push(requestAnimationFrame(step));
+  }
+  LP_RAFS.push(requestAnimationFrame(step));
+}
+
+/* Animasi masuk landing: dipanggil saat halaman pertama tampil dan setiap kembali ke landing */
+function playLandingIntro() {
+  const landing = document.getElementById('landingPage');
+  if (!landing || landing.classList.contains('view-hidden')) return;
+  LP_RAFS.forEach(cancelAnimationFrame); LP_RAFS = [];
+  ['FM', 'LM'].forEach(m => clearTimeout(LP_DRAW[m]));
+  const red = lpReduce();
+  lpAnim(document.getElementById('landingLogo'), { opacity: 0, transform: 'scale(.3) rotate(-18deg)' }, { duration: 900, easing: LP_SPRING });
+  landing.querySelectorAll('[data-a="up"]').forEach((el, i) => lpAnim(el, { opacity: 0, transform: 'translateY(18px)' }, { delay: 250 + i * 120 }));
+  const greet = document.getElementById('greetingText');
+  if (greet && greet.style.display !== 'none') lpAnim(greet, { opacity: 0, transform: 'scale(.7)' }, { delay: 560, duration: 600, easing: LP_SPRING });
+  landing.querySelectorAll('.mode-card[data-a="card"]').forEach((c, i) => {
+    lpAnim(c, { opacity: 0, transform: 'translateY(48px) scale(.96)' }, { delay: 650 + i * 140, duration: 900, easing: LP_SPRING });
+  });
+  LP_READY_AT = performance.now() + (red ? 0 : 1900);
+  // jika snapshot sudah ada (kembali dari dashboard), tampilkan ulang dengan animasi
+  ['FM', 'LM'].forEach(m => { if (LAST_SNAP[m]) renderSnap_(m, LAST_SNAP[m]); });
+}
+
+function loadLandingSnapshot() {
+  if (Date.now() - SNAP_AT < 60000) return;
+  SNAP_AT = Date.now();
+  google.script.run
+    .withSuccessHandler(r => {
+      const d = (r && r.success && r.data) ? r.data : {};
+      renderSnap_('FM', d.FM); renderSnap_('LM', d.LM);
+    })
+    .withFailureHandler(() => { SNAP_AT = 0; renderSnap_('FM', null); renderSnap_('LM', null); })
+    .apiGetLandingSnapshot();
+}
+
+function renderSnap_(mode, d) {
+  const el = document.getElementById('snap' + mode); if (!el) return;
+  if (!d) { LAST_SNAP[mode] = null; clearTimeout(LP_DRAW[mode]); el.innerHTML = '<div class="snap-empty">Ringkasan belum tersedia</div>'; return; }
+  LAST_SNAP[mode] = d;
+  clearTimeout(LP_DRAW[mode]);
+  const wait = Math.max(0, LP_READY_AT + (mode === 'LM' ? 350 : 0) - performance.now());
+  LP_DRAW[mode] = setTimeout(() => drawSnap_(mode, el, d), wait);
+}
+
+function drawSnap_(mode, el, d) {
+  const t = tier(d.score);
+  const score = Number(d.score);
+  let pill = '';
+  if (d.delta !== null && d.delta !== undefined && !isNaN(d.delta)) {
+    const up = d.delta >= 0.05, down = d.delta <= -0.05;
+    pill = '<span class="delta-pill ' + (up ? 'delta-up' : (down ? 'delta-down' : 'delta-neutral')) + '">' +
+      (up ? ICON.up : (down ? ICON.down : ICON.minus)) + ' ' + Math.abs(d.delta).toFixed(2) + ' pt</span>';
+  }
+  const pct = Math.max(0, Math.min(100, isNaN(score) ? 0 : score));
+  const mark = Math.max(0, Math.min(100, Number(WARN_THRESHOLD) || 0));
+  el.innerHTML =
+    '<div class="snap-data">' +
+    '<div class="snap-label">Skor mingguan · ' + esc(d.week) + '</div>' +
+    '<div class="snap-row"><span class="snap-score ' + t + '" aria-hidden="true">' + score.toFixed(2) + '%</span>' +
+    '<span class="sr-only">Skor ' + score.toFixed(2) + ' persen</span>' + pill + '</div>' +
+    '<div class="snap-track" aria-hidden="true"><div class="snap-fill ' + t + '" style="width:' + pct + '%"></div><div class="snap-mark" style="left:' + mark + '%" title="Ambang ' + mark + '%"></div></div>' +
+    '<div class="snap-sub">' + d.hubsBelowWarn + ' dari ' + d.hubCount + ' hub di bawah ' + WARN_THRESHOLD + '%' +
+    (d.worstHub ? ' · terendah: ' + esc(d.worstHub) + ' (' + Number(d.worstScore).toFixed(2) + '%)' : '') +
+    (d.hubsNoData ? ' · ' + d.hubsNoData + ' hub belum ada data' : '') + '</div>' +
+    '</div>';
+  if (isNaN(score)) return;
+  lpAnim(el.querySelector('.snap-data'), { opacity: 0, transform: 'translateY(10px)' }, { duration: 500 });
+  lpCount(el.querySelector('.snap-score'), score, 1300);
+  const fill = el.querySelector('.snap-fill');
+  if (fill && !lpReduce() && fill.animate) fill.animate([{ width: '0%' }, { width: pct + '%' }], { duration: 1300, easing: LP_EASE });
+  const pl = el.querySelector('.delta-pill');
+  if (pl) lpAnim(pl, { opacity: 0, transform: 'scale(.4)' }, { duration: 600, delay: 700, easing: LP_SPRING });
+}
+
+/* Interaksi kartu: spotlight mengikuti kursor, miring 3D (mouse saja), tekan = menyusut; logo bergoyang saat diklik */
+(function initLandingFx() {
+  document.querySelectorAll('.mode-card[data-a="card"]').forEach(c => {
+    c.addEventListener('pointermove', e => {
+      const r = c.getBoundingClientRect(), x = (e.clientX - r.left) / r.width, y = (e.clientY - r.top) / r.height;
+      c.style.setProperty('--mx', (x * 100) + '%'); c.style.setProperty('--my', (y * 100) + '%');
+      if (e.pointerType !== 'mouse' || lpReduce()) return;
+      c.style.transition = 'transform .12s linear';
+      c.style.transform = 'translateY(-6px) rotateX(' + ((.5 - y) * 6) + 'deg) rotateY(' + ((x - .5) * 7) + 'deg)';
+    });
+    c.addEventListener('pointerleave', () => { c.style.transition = 'transform .6s ' + LP_SPRING + ', box-shadow .3s'; c.style.transform = ''; });
+    c.addEventListener('pointerdown', () => { if (!lpReduce()) { c.style.transition = 'transform .12s'; c.style.transform = 'scale(.98)'; } });
+    c.addEventListener('pointerup', () => { c.style.transition = 'transform .5s ' + LP_SPRING; c.style.transform = ''; });
+  });
+  const logo = document.getElementById('landingLogo');
+  if (logo) logo.addEventListener('click', () => {
+    if (lpReduce() || !logo.animate) return;
+    logo.animate([{ transform: 'rotate(0) scale(1)' }, { transform: 'rotate(-10deg) scale(1.12)' }, { transform: 'rotate(7deg) scale(1.06)' }, { transform: 'rotate(0) scale(1)' }], { duration: 600, easing: LP_SPRING });
+  });
+  document.addEventListener('DOMContentLoaded', playLandingIntro);
+  if (document.readyState !== 'loading') playLandingIntro();
+})();
+</script>

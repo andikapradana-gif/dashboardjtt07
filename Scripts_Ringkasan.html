@@ -1,0 +1,329 @@
+<script>
+function loadRingkasan() {
+  const key = `ringkasan_${STATE.mode}_${STATE.hub}_${STATE.date}_${STATE.week}_${STATE.month}`;
+  const cached = cacheGet(key); if (cached) return renderRingkasan(cached);
+  google.script.run.withSuccessHandler(res => handleResponse(res, data => { if (!data.scoreIncomplete) cacheSet(key, data); renderRingkasan(data); }))
+    .withFailureHandler(showError).apiGetRingkasan(STATE.mode, STATE.hub, STATE.date, STATE.week, STATE.month);
+}
+
+function setRingkasanSort(v) { STATE.ringkasanSort = v; if (LAST_RINGKASAN) renderRingkasan(LAST_RINGKASAN); }
+
+function renderRingkasan(data) {
+  if (!data.summary || !data.summary.length) return showEmpty();
+  
+  const isLM = STATE.mode === 'LM';
+
+  let avgOverall = data.overallScore;
+  if (avgOverall === null || avgOverall === undefined) {
+    let totalValid = 0;
+    let sumAch = 0;
+    data.summary.forEach(m => {
+      if (m.blended !== null && !isNaN(m.blended)) {
+        sumAch += m.blended;
+        totalValid++;
+      }
+    });
+    avgOverall = totalValid > 0 ? (sumAch / totalValid) : 0;
+  }
+  LAST_RINGKASAN = data;
+  const criticalCount = data.criticalAnalysis ? data.criticalAnalysis.length : 0;
+  const activeHubsCount = FILTER_OPTIONS.hubs ? FILTER_OPTIONS.hubs.length : 0;
+
+  const fromScore = data.overallSource === 'score';
+  const kpiCardTitle = fromScore ? 'Skor KPI Rata-Rata Hub' : (isLM ? 'Rata-Rata KPI Achievement' : 'Rata-Rata KPI Total (Blended)');
+  const scoreIncomplete = fromScore && data.scoreIncomplete && data.scoreTotal > data.scoreHubs;
+  const excludedNames = (data.scoreExcluded || []).join(', ');
+  const kpiCardSub = fromScore
+    ? 'Rata-rata kolom SCORE' + (data.scoreHubs
+        ? (scoreIncomplete
+            ? ' · <span style="color:var(--warn-text);font-weight:700;cursor:help" title="Belum ada skor valid: ' + esc(excludedNames) + '">' + data.scoreHubs + ' dari ' + data.scoreTotal + ' hub (data belum lengkap)</span>'
+            : ' · ' + data.scoreHubs + ' hub')
+        : '')
+    : (data.provisional ? '<span style="color:var(--warn-text);font-weight:700;">Sementara</span> · dihitung dari data harian (Reguler + High); FM Blended Weekly belum berisi minggu ini' : (isLM ? 'Rata-rata metrik berbobot (belum ada SCORE untuk tampilan harian)' : 'Reguler + High · rata-rata metrik berbobot (belum ada SCORE untuk tampilan harian)'));
+
+  /* ─── HERO: skor vs target + sebaran status ─── */
+  const T = TARGET_THRESHOLD;
+  const tierLabel = { tercapai: 'Tercapai', waspada: 'Waspada', kritis: 'Kritis', nodata: 'No data' };
+  const counts = { tercapai: 0, waspada: 0, kritis: 0, nodata: 0 };
+  data.summary.forEach(m => { counts[tier(m.blended === null || m.blended === undefined ? null : Number(m.blended))]++; });
+  const totalMetrics = data.summary.length;
+  const heroTier = tier(avgOverall);
+  const heroGap = avgOverall - T;
+  const heroLo = avgOverall >= 90 ? 90 : 70;   // skala bar menyesuaikan agar skor <90 tetap terlihat
+  const heroBarPct = Math.max(2, Math.min(100, ((avgOverall - heroLo) / (100 - heroLo)) * 100));
+  const heroTargetPos = Math.max(0, Math.min(100, ((T - heroLo) / (100 - heroLo)) * 100));
+  const heroBarClass = { tercapai: 'status-pass-bg', waspada: 'status-warn-bg' }[heroTier] || 'status-fail-bg';
+  const heroGapText = heroGap >= 0
+    ? `Di atas target ${T.toFixed(2)}% (+${heroGap.toFixed(2)} pt)`
+    : `Kurang ${Math.abs(heroGap).toFixed(2)} pt dari target ${T.toFixed(2)}%`;
+  const distSeg = (k) => counts[k] > 0 ? `<span class="dist-seg dist-${k}" style="flex:${counts[k]}" title="${tierLabel[k]}: ${counts[k]}"></span>` : '';
+  const distItem = (k, ico) => `<span class="dist-item dist-${k}-t">${ico}<b>${counts[k]}</b> ${tierLabel[k]}</span>`;
+  const heroMeta = `${isLM ? 'Last Mile' : 'First Mile'} · ${esc(getFilterLabel())}${STATE.hub ? '' : ' · ' + activeHubsCount + ' hub'}`;
+
+  const summaryCardsHtml = `
+    <section class="hero-card">
+      <div class="hero-main">
+        <div class="hero-label">${kpiCardTitle}</div>
+        <div class="hero-score-row">
+          <div class="hero-score ${heroTier}">${avgOverall.toFixed(2)}<small>%</small></div>
+          <span class="badge ${heroTier}">${tierLabel[heroTier]}</span>
+        </div>
+        <div class="hero-gap ${heroTier}">${heroGapText}</div>
+        <div class="metric-progress-bg hero-bar" style="--target-pos:${heroTargetPos}%" role="img" aria-label="Skor ${avgOverall.toFixed(2)} persen, target ${T.toFixed(2)} persen">
+          <div class="metric-progress-fill ${heroBarClass}" style="width:${heroBarPct}%"></div>
+        </div>
+        <div class="hero-foot">
+          <span>${kpiCardSub}</span>
+          ${data.wow ? `<span>${formatTrendDelta(data.wow.delta)} vs ${esc(data.wow.prevWeek)} ${fromScore ? '' : `<span class="muted">(skor ${esc(data.wow.week)}: ${data.wow.current.toFixed(2)}%)</span>`}</span>` : ''}
+        </div>
+      </div>
+      <div class="hero-side">
+        <div class="hero-label">Status ${totalMetrics} metrik</div>
+        <div class="hero-big">${counts.tercapai}<small> / ${totalMetrics} mencapai target</small></div>
+        <div class="dist-bar" role="img" aria-label="Sebaran status metrik">${distSeg('tercapai')}${distSeg('waspada')}${distSeg('kritis')}${distSeg('nodata')}</div>
+        <div class="dist-legend">
+          ${distItem('tercapai', ICON.check)}${distItem('waspada', ICON.alert)}${distItem('kritis', ICON.x)}${counts.nodata ? distItem('nodata', ICON.minus) : ''}
+        </div>
+        <div class="hero-meta">${heroMeta}</div>
+      </div>
+    </section>
+  `;
+
+  /* urutan grid metrik: default / terburuk dulu */
+  const metricsView = STATE.ringkasanSort === 'worst'
+    ? data.summary.slice().sort((a, b) => {
+        const va = (a.blended === null || a.blended === undefined || isNaN(a.blended)) ? Infinity : Number(a.blended);
+        const vb = (b.blended === null || b.blended === undefined || isNaN(b.blended)) ? Infinity : Number(b.blended);
+        return va - vb;
+      })
+    : data.summary;
+
+  const visualTextMetricsHtml = `
+    <div class="card" style="margin-bottom: 20px; padding: 20px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--primary);"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+          <h3 style="font-size: 15px; font-weight: 700; color: var(--text-main); margin: 0;">Ringkasan Performa Metrik</h3>
+        </div>
+        <div class="hdr-tools">
+          <div class="seg" role="group" aria-label="Urutan metrik">
+            <button type="button" class="${STATE.ringkasanSort === 'worst' ? '' : 'active'}" onclick="setRingkasanSort('default')">Default</button>
+            <button type="button" class="${STATE.ringkasanSort === 'worst' ? 'active' : ''}" onclick="setRingkasanSort('worst')">Terburuk dulu</button>
+          </div>
+          <span class="target-pill">Target minimal: <b>${TARGET_THRESHOLD.toFixed(2)}%</b></span>
+        </div>
+      </div>
+
+      <div class="metric-grid-container">
+        ${metricsView.map(m => {
+          const val = m.blended;
+          const hasData = val !== null && val !== undefined && !isNaN(val);
+          const valNum = hasData ? Number(val) : 0;
+          const isPass = hasData && valNum >= TARGET_THRESHOLD;
+          
+          const tr = tier(hasData ? valNum : null);
+          const textColorClass = {tercapai:'status-pass-text', waspada:'status-warn-text'}[tr] || 'status-fail-text';
+          const barColorClass  = {tercapai:'status-pass-bg', waspada:'status-warn-bg'}[tr] || 'status-fail-bg';
+          const badgeStyle     = tr;
+          const badgeText      = {tercapai:'TERCAPAI', waspada:'WASPADA', kritis:'KRITIS', nodata:'NO DATA'}[tr];
+
+          let barWidth = 0;
+          if (hasData && valNum > 0) {
+            barWidth = Math.max(2, Math.min(100, ((valNum - 90) / 10) * 100));
+          }
+
+          return `
+            <div class="metric-card-item">
+              <div class="metric-card-header">
+                <div class="metric-title-group">
+                  <span class="metric-name">${m.label}</span>
+                </div>
+                <div class="metric-val-group">
+                  <span class="metric-score-number ${textColorClass}">${hasData ? valNum.toFixed(2) + '%' : '—'}</span>
+                  ${hasData && !isPass ? `<span class="metric-gap">${(valNum - TARGET_THRESHOLD).toFixed(2)} pt</span>` : ''}
+                  <span class="badge ${badgeStyle}" style="font-size: 9px; padding: 2px 8px; font-weight: 800;">${badgeText}</span>
+                </div>
+              </div>
+              
+              <div class="metric-progress-bg">
+                <div class="metric-progress-fill ${barColorClass}" style="width: ${barWidth}%;"></div>
+              </div>
+              ${!isLM ? `<div class="subtitle">Reguler ${fmtPct(m.regular)} · High ${fmtPct(m.high)}</div>` : ''}
+            </div>
+          `;
+        }).join('')}
+      </div>
+    </div>
+  `;
+
+  const rows = data.summary.map(m => {
+    const regClass = getStatusClass(m.regular);
+    const blendClass = getStatusClass(m.blended);
+
+    return `
+      <tr>
+        <td><b>${m.label}</b></td>
+        ${!isLM ? `<td class="cell ${regClass}">${fmtPct(m.regular)}</td>` : ''}
+        ${!isLM ? `<td class="cell ${getStatusClass(m.high)}">${fmtPct(m.high)}</td>` : ''}
+        <td class="cell ${blendClass}"><b>${fmtPct(m.blended)}</b></td>
+      </tr>
+    `;
+  }).join('');
+
+  const crit = data.criticalAnalysis || [];
+  const prioHtml = buildPriorityHtml_(crit, data);
+  let analysisHtml = '';
+  if (crit.length > PRIORITY_N) {
+    analysisHtml = `
+      <div class="section-block">
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+          <h3 style="font-size: 16px; font-weight: 700; color: var(--text-main); display: flex; align-items: center; gap: 8px;">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--crit-text);"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            Analisis KPI
+          </h3>
+          <span class="badge kritis" style="font-size: 12px; padding: 4px 12px;">
+            ${crit.length} Metrik < ${TARGET_THRESHOLD.toFixed(2)}%
+          </span>
+        </div>
+
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px;">
+          ${crit.slice(PRIORITY_N).map((item, i) => { const idx = i + PRIORITY_N; return `
+            <div class="card" style="padding: 16px; border-left: 4px solid var(--crit-text); display: flex; flex-direction: column; justify-content: space-between;">
+              <div>
+                <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px dashed var(--border);">
+                  <div>
+                    <span style="font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Prioritas #${idx + 1}</span>
+                    <h4 style="font-size: 14px; font-weight: 700; color: var(--text-main); margin-top: 2px;">${esc(item.metricLabel)}</h4>
+                  </div>
+                  <div style="text-align: right;">
+                    <div style="font-size: 15px; font-weight: 800; color: var(--crit-text);">${item.blendedScore.toFixed(1)}%</div>
+                    <div style="font-size: 10px; color: var(--crit-text); font-weight: 600;">Dampak: -${item.weightedImpact.toFixed(1)}</div>
+                  </div>
+                </div>
+
+                <div style="background: var(--bg); padding: 8px 12px; border-radius: 8px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;">
+                  <span style="font-size: 12px; color: var(--text-muted);">Hub Terendah:</span>
+                  <span style="font-size: 12px; font-weight: 700; color: var(--text-main); display:inline-flex; align-items:center; gap:4px;">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a8 8 0 0 0-8 8c0 5.25 8 12 8 12s8-6.75 8-12a8 8 0 0 0-8-8z"/><circle cx="12" cy="10" r="3"/></svg>
+                    ${(item.worstHub && item.worstHub !== '—') ? hubLinkHtml_(item) : esc(item.worstHub)} <span style="color: var(--crit-text);">(${item.worstVal !== null ? item.worstVal.toFixed(1) + '%' : '—'})</span>
+                  </span>
+                </div>
+
+                <div style="font-size: 12px; color: var(--text-main); line-height: 1.5; background: var(--card-solid); padding: 10px; border-radius: 8px; border: 1px solid var(--border);">
+                  <b style="color: var(--primary); display:inline-flex; align-items:center; gap:4px; margin-bottom:2px;">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"/><path d="M9 18h6"/><path d="M10 22h4"/></svg> Rekomendasi Aksi:
+                  </b><br>
+                  ${esc(item.clearSuggestion.split('Tindakan: ')[1] || item.clearSuggestion)}
+                </div>
+              </div>
+            </div>
+          `; }).join('')}
+        </div>
+      </div>
+    `;
+  } else if (!crit.length) {
+    analysisHtml = `
+      <div class="card section-block" style="background: var(--ok-bg); border: 1px solid #86efac; color: var(--ok-text); padding: 16px; text-align: center; display:flex; align-items:center; justify-content:center; gap:8px;">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+        <b>Performa Sangat Baik:</b> Seluruh metrik KPI berhasil mencapai target minimal (${TARGET_THRESHOLD.toFixed(2)}%).
+      </div>
+    `;
+  }
+
+  document.getElementById('pageContent').innerHTML = `
+    <div class="tbl-tools">
+      <button class="btn-trend-tab" onclick="copySummary()">${ICON.clipboard} Salin ringkasan (WhatsApp)</button>
+      <button class="btn-trend-tab" onclick="openReportImage(this)">${ICON.image} Simpan sebagai gambar</button>
+      <button class="btn-trend-tab" onclick="openMigoo(this)">${ICON.download} Analisis di Migoo</button>
+    </div>
+    ${summaryCardsHtml}
+    ${prioHtml}
+    ${analysisHtml}
+    ${visualTextMetricsHtml}
+  `;
+  
+  setUpdated();
+}
+
+/* ─── 3 PRIORITAS: diambil dari criticalAnalysis (sudah diurut menurut dampak berbobot) ─── */
+const PRIORITY_N = 3;
+let LAST_RINGKASAN = null;
+
+function priorityHeading_() {
+  const latest = (typeof periodLatestWeek_ === 'function') ? periodLatestWeek_() : null;
+  if (STATE.week && !STATE.date) {
+    return { title: (latest !== null && String(STATE.week) === String(latest)) ? '3 Prioritas Minggu Ini' : '3 Prioritas Minggu ' + STATE.week, period: 'Minggu ' + STATE.week };
+  }
+  return { title: '3 Prioritas Periode Ini', period: getFilterLabel() };
+}
+
+/* Nama hub yang bisa diklik → buka laporan Harian hub tersebut */
+function hubLinkHtml_(it) {
+  return `<button type="button" class="hub-link" style="background:none;border:0;padding:0;font:inherit;font-weight:700;color:var(--primary);cursor:pointer;text-decoration:underline dotted;text-underline-offset:3px" title="Lihat laporan harian hub ini" onclick="goToHarian_('${ja(it.metricKey)}','${ja(it.worstHub)}')">${esc(it.worstHub)}</button>`;
+}
+
+function buildPriorityHtml_(crit, data) {
+  if (!crit || !crit.length) return '';
+  const h = priorityHeading_();
+  const tl = { waspada: 'Waspada', kritis: 'Kritis' };
+  const items = crit.slice(0, PRIORITY_N).map((it, i) => {
+    const t = tier(it.blendedScore) === 'waspada' ? 'waspada' : 'kritis';
+    const gap = TARGET_THRESHOLD - it.blendedScore;
+    const action = esc(String(it.clearSuggestion || '').split('Tindakan: ')[1] || it.clearSuggestion || '');
+    const worstVal = (it.worstVal !== null && it.worstVal !== undefined) ? ' (' + Number(it.worstVal).toFixed(1) + '%)' : '';
+    const worst = (it.worstHub && it.worstHub !== '—') ? hubLinkHtml_(it) + worstVal : '—';
+    return `
+      <li class="priority-item is-${t}">
+        <span class="priority-rank" aria-hidden="true">${i + 1}</span>
+        <div class="priority-body">
+          <div class="priority-metric">${esc(it.metricLabel)}</div>
+          <div class="priority-stats">
+            <b class="priority-score is-${t}">${Number(it.blendedScore).toFixed(2)}%</b>
+            <span class="badge ${t}">${tl[t]}</span>
+            <span class="priority-gap">kurang ${gap.toFixed(2)} pt dari target</span>
+          </div>
+          <div class="priority-hub">Hub terendah: <b>${worst}</b></div>
+          <p class="priority-action"><b>Aksi:</b> ${action}</p>
+        </div>
+      </li>`;
+  }).join('');
+  const more = crit.length > PRIORITY_N ? ` · ${crit.length - PRIORITY_N} metrik lain di bawah target ada di bagian Analisis KPI` : '';
+  return `
+    <section class="priority-block" aria-labelledby="prioTitle">
+      <div class="priority-head">
+        <h3 id="prioTitle">${h.title}</h3>
+        <span class="priority-sub">${esc(h.period)} · diurutkan menurut dampak berbobot${more}</span>
+      </div>
+      <ol class="priority-list">${items}</ol>
+    </section>`;
+}
+
+function copySummary() {
+  const d = LAST_RINGKASAN; if (!d) return;
+  const L = ['*Ringkasan KPI ' + STATE.mode + ' JTT-07*', getFilterLabel(),
+    'Skor rata-rata: ' + (d.overallScore !== null && d.overallScore !== undefined ? d.overallScore.toFixed(2) : '—') + '%' +
+    (d.wow ? ' (' + (d.wow.delta >= 0 ? '▲' : '▼') + ' ' + Math.abs(d.wow.delta).toFixed(2) + '% vs ' + d.wow.prevWeek + ')' : '')];
+  const c = d.criticalAnalysis || [];
+  if (!c.length) L.push('✅ Semua metrik mencapai target ' + TARGET_THRESHOLD.toFixed(2) + '%');
+  else {
+    L.push('', '⚠️ ' + c.length + ' metrik di bawah target:');
+    c.forEach((x, i) => L.push((i + 1) + '. ' + x.metricLabel + ': ' + x.blendedScore.toFixed(1) + '% (hub terendah: ' + x.worstHub + ' ' + (x.worstVal !== null ? x.worstVal.toFixed(1) + '%' : '—') + ')'));
+  }
+  copyText(L.join('\n'), 'Ringkasan disalin');
+}
+/* Klik nama hub di Ringkasan → buka Harian (LM: Harian, FM: Harian Reguler) dengan filter hub terpilih */
+function goToHarian_(metricKey, hub) {
+  const norm = x => String(x || '').toLowerCase().replace(/first mile hub/g, '').replace(/hub/g, '').replace(/[^a-z0-9]/g, '');
+  const sel = document.getElementById('hubFilter');
+  if (sel && hub) {
+    const opt = Array.from(sel.options).find(o => o.value && norm(o.value) === norm(hub));
+    if (opt) { sel.value = opt.value; STATE.hub = opt.value; }
+  }
+  const page = STATE.mode === 'LM' ? 'daily_lm' : 'daily_regular';
+  STATE.page = page;
+  document.querySelectorAll('#mainNav button').forEach(b => b.classList.toggle('active', b.dataset.page === page));
+  announce_('Halaman ' + pageLabel(page));
+  renderPage();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+</script>

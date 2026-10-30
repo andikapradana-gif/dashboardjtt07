@@ -1,0 +1,111 @@
+<script>
+/* ─── RENDERER BARU: DAILY REPORT MATRIX ─── */
+function loadDailyReport(segmentType) {
+  const key = `daily_report_${STATE.mode}_${segmentType}_${STATE.hub}_${STATE.month}_${STATE.week}`;
+  callApiCached(key, 'apiGetDailyReportMatrix',
+    [STATE.mode, segmentType, STATE.hub, STATE.month, STATE.week],
+    STATE.page, data => renderDailyReport(data, segmentType));
+}
+
+function renderDailyReport(data, segmentType) {
+  if (!data || !data.dates || !data.dates.length || !data.rows || !data.rows.length) {
+    return showEmpty('Data laporan harian tidak ditemukan untuk filter ini.');
+  }
+
+  const titleMap = {
+    'daily_regular': 'Laporan ' + PAGE_LABELS.daily_regular,
+    'daily_high': 'Laporan ' + PAGE_LABELS.daily_high,
+    'daily_lm': 'Laporan ' + PAGE_LABELS.daily_lm + ' Last Mile'
+  };
+
+  let html = `
+    <div class="card" style="margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+      <div>
+        <h3 style="font-size: 16px; font-weight: 700; color: var(--text-main); margin-bottom: 2px;">
+          ${titleMap[STATE.page] || 'Laporan Harian'}
+        </h3>
+        <div style="font-size: 12px; color: var(--text-muted);">
+          Hub: <b>${esc(data.hubLabel || STATE.hub || 'Semua Hub')}</b> · Periode Data Harian
+        </div>
+      </div>
+    </div>
+
+    <div class="heatmap-wrap">
+      <table class="heatmap-table table-fit">
+        <thead>
+          <tr>
+            <th class="sticky-col" style="min-width: 220px;">Metrik</th>
+            <th style="text-align: center; min-width: 80px;">Rata-rata</th>
+            <th style="text-align: center; min-width: 90px;">Hari = Target</th>
+            ${data.dates.map(d => `<th style="text-align: center;">${esc(d)}</th>`).join('')}
+          </tr>
+        </thead>
+        <tbody>
+          ${data.rows.map(row => `
+            <tr>
+              <td class="sticky-col"><b>${esc(row.metricLabel)}</b></td>
+              <td class="cell ${getStatusClass(row.avg)}">${row.avg !== null ? row.avg.toFixed(1) + '%' : '—'}</td>
+              <td style="text-align: center; font-weight: 700; color: var(--text-main);">${row.targetCount}/${data.dates.length}</td>
+              ${data.dates.map(d => {
+                const val = row.datesData[d];
+                const cellClass = getStatusClass(val);
+                return `<td class="cell ${cellClass}">${val !== null && val !== undefined ? val.toFixed(1) + '%' : '—'}</td>`;
+              }).join('')}
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+
+  document.getElementById('pageContent').innerHTML = html;
+  setUpdated();
+}
+
+function loadHarian() {
+  const key = `harian_${STATE.mode}_${STATE.metric}_${STATE.segment}_${STATE.hub}_${STATE.month}_${STATE.week}`;
+  callApiCached(key, 'apiGetHarian',
+    [STATE.mode, STATE.metric, STATE.segment, STATE.hub, STATE.month, STATE.week], 'harian', renderHarian);
+}
+
+function renderHarian(data) {
+  if (!data.dates || !data.dates.length) return showEmpty();
+
+  const container = document.getElementById('pageContent');
+  const wrap = document.createElement('div');
+  wrap.className = 'heatmap-wrap';
+
+  const table = document.createElement('table');
+  table.className = 'heatmap-table';
+
+  const thead = document.createElement('thead');
+  thead.innerHTML = `<tr><th class="sticky-col">Hub</th>${data.dates.map(d => `<th>${esc(d)}</th>`).join('')}</tr>`;
+  table.appendChild(thead);
+
+  const tbody = document.createElement('tbody');
+  const fragment = document.createDocumentFragment();
+
+  data.matrix.forEach(row => {
+    const tr = document.createElement('tr');
+    let rowHtml = `<td class="sticky-col"><b>${esc(row.hub)}</b></td>`;
+    
+    data.dates.forEach(d => {
+      const val = row[d];
+      const cellClass = harianCellClass(val);
+      const text = (val === null || val === undefined) ? '—' : val.toFixed(1) + '%';
+      rowHtml += `<td class="cell ${cellClass}">${text}</td>`;
+    });
+
+    tr.innerHTML = rowHtml;
+    fragment.appendChild(tr);
+  });
+
+  tbody.appendChild(fragment);
+  table.appendChild(tbody);
+  wrap.appendChild(table);
+
+  container.innerHTML = '';
+  container.appendChild(wrap);
+  setUpdated();
+}
+</script>

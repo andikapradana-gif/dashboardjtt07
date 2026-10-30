@@ -1,0 +1,271 @@
+<script>
+/* ═══ GAMBAR LAPORAN — Ringkasan → PNG (kanvas murni, tanpa library eksternal) ═══
+   Dirender selalu bertema terang agar mudah dibagikan (WhatsApp / email / slide). */
+const RPT = { dataUrl: '', filename: '', opener: null, keyHandler: null };
+const RPT_FONT = "'Inter', -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif";
+
+function rptRoundRect_(c, x, y, w, h, r) {
+  r = Math.min(r, w / 2, h / 2);
+  c.beginPath();
+  c.moveTo(x + r, y); c.lineTo(x + w - r, y); c.arcTo(x + w, y, x + w, y + r, r);
+  c.lineTo(x + w, y + h - r); c.arcTo(x + w, y + h, x + w - r, y + h, r);
+  c.lineTo(x + r, y + h); c.arcTo(x, y + h, x, y + h - r, r);
+  c.lineTo(x, y + r); c.arcTo(x, y, x + r, y, r); c.closePath();
+}
+function rptWrap_(c, text, maxW, maxLines) {
+  const words = String(text || '').split(/\s+/).filter(Boolean), lines = [];
+  let cur = '';
+  for (const w of words) {
+    const t = cur ? cur + ' ' + w : w;
+    if (c.measureText(t).width <= maxW || !cur) cur = t; else { lines.push(cur); cur = w; }
+  }
+  if (cur) lines.push(cur);
+  if (maxLines && lines.length > maxLines) {
+    lines.length = maxLines;
+    let last = lines[maxLines - 1];
+    while (last.length > 1 && c.measureText(last + '…').width > maxW) last = last.slice(0, -1);
+    lines[maxLines - 1] = last.replace(/[\s,.;:]+$/, '') + '…';
+  }
+  return lines;
+}
+function rptFit_(c, text, maxW) {
+  let t = String(text || '');
+  if (c.measureText(t).width <= maxW) return t;
+  while (t.length > 1 && c.measureText(t + '…').width > maxW) t = t.slice(0, -1);
+  return t + '…';
+}
+
+function buildReportCanvas_(d) {
+  const W = 1080, P = 40, S = 2, IW = W - P * 2;
+  const T = TARGET_THRESHOLD, isLM = STATE.mode === 'LM';
+  const C = { bg: '#f5f5f7', card: '#ffffff', text: '#1d1d1f', muted: '#6e6e73', line: '#e5e5ea', track: '#e9e9ee',
+              tercapai: '#15803d', waspada: '#b45309', kritis: '#b91c1c', nodata: '#6e6e73', head: '#0f172a',
+              okBg: '#dcfce7', warnBg: '#fef3c7', critBg: '#fee2e2' };
+  const col = t => C[t] || C.nodata;
+  const tlabel = { tercapai: 'Tercapai', waspada: 'Waspada', kritis: 'Kritis', nodata: 'No data' };
+  const num = v => (v === null || v === undefined || isNaN(v)) ? null : Number(v);
+  const pct = v => num(v) === null ? '—' : Number(v).toFixed(2) + '%';
+
+  const summary = d.summary || [];
+  const crit = (d.criticalAnalysis || []).slice(0, PRIORITY_N);
+  let avg = num(d.overallScore);
+  if (avg === null) {
+    const ok = summary.map(m => num(m.blended)).filter(v => v !== null);
+    avg = ok.length ? ok.reduce((a, b) => a + b, 0) / ok.length : 0;
+  }
+  const counts = { tercapai: 0, waspada: 0, kritis: 0, nodata: 0 };
+  summary.forEach(m => { counts[tier(num(m.blended))]++; });
+  const heroTier = tier(avg);
+
+  // ukur teks aksi lebih dulu supaya tinggi kanvas pas
+  const mc = document.createElement('canvas').getContext('2d');
+  mc.font = '500 14px ' + RPT_FONT;
+  const prio = crit.map(it => ({
+    it,
+    lines: rptWrap_(mc, String(it.clearSuggestion || '').split('Tindakan: ')[1] || it.clearSuggestion || '', IW - 120, 3)
+  }));
+
+  const rowH = isLM ? 56 : 72;
+  const hHead = 128, hHero = 214, hMetricsHead = 64, hFoot = 56;
+  const hMetrics = hMetricsHead + summary.length * rowH + 16;
+  const hPrioHead = 64;
+  const hPrio = crit.length ? hPrioHead + prio.reduce((a, p) => a + 96 + p.lines.length * 20, 0) + 12 : 84;
+  const H = hHead + 24 + hHero + 20 + hMetrics + 20 + hPrio + 24 + hFoot;
+
+  const cv = document.createElement('canvas');
+  cv.width = W * S; cv.height = H * S;
+  const c = cv.getContext('2d'); c.scale(S, S); c.textBaseline = 'alphabetic';
+  const font = (w, s) => { c.font = w + ' ' + s + 'px ' + RPT_FONT; };
+  const txt = (s, x, y, color, align) => { c.fillStyle = color; c.textAlign = align || 'left'; c.fillText(s, x, y); };
+  const card = (y, h) => { rptRoundRect_(c, P, y, IW, h, 20); c.fillStyle = C.card; c.fill(); c.strokeStyle = C.line; c.lineWidth = 1; c.stroke(); };
+  const bar = (x, y, w, v, color, hh) => {
+    hh = hh || 10;
+    rptRoundRect_(c, x, y, w, hh, hh / 2); c.fillStyle = C.track; c.fill();
+    if (v !== null) {
+      const f = Math.max(0.02, Math.min(1, (v - 90) / 10));
+      rptRoundRect_(c, x, y, Math.max(hh, w * f), hh, hh / 2); c.fillStyle = color; c.fill();
+    }
+    const tx = x + w * Math.max(0, Math.min(1, (T - 90) / 10));
+    c.fillStyle = C.text; c.fillRect(tx - 1, y - 4, 2, hh + 8);
+  };
+
+  c.fillStyle = C.bg; c.fillRect(0, 0, W, H);
+
+  // header
+  c.fillStyle = C.head; c.fillRect(0, 0, W, hHead);
+  font('800', 30); txt('Dashboard KPI JTT-07 · ' + (isLM ? 'Last Mile' : 'First Mile'), P, 54, '#ffffff');
+  font('500', 16); txt(rptFit_(c, getFilterLabel(), IW - 220), P, 86, '#cbd5e1');
+  font('500', 13);
+  txt('Dibuat ' + new Date().toLocaleString('id-ID', { dateStyle: 'medium', timeStyle: 'short' }), W - P, 54, '#94a3b8', 'right');
+  txt(pageLabel('ringkasan'), W - P, 86, '#94a3b8', 'right');
+  font('500', 13); txt('Target minimal ' + T.toFixed(2) + '%', P, 112, '#94a3b8');
+
+  // hero
+  let y = hHead + 24;
+  card(y, hHero);
+  font('600', 14); txt(d.overallSource === 'score' ? 'SKOR KPI RATA-RATA HUB' : 'RATA-RATA KPI BERBOBOT', P + 28, y + 40, C.muted);
+  font('800', 68); txt(avg.toFixed(2), P + 28, y + 112, col(heroTier));
+  const sw = c.measureText(avg.toFixed(2)).width;
+  font('800', 28); txt('%', P + 32 + sw, y + 112, col(heroTier));
+  const bx = P + 32 + sw + 44;
+  const bg = { tercapai: C.okBg, waspada: C.warnBg, kritis: C.critBg, nodata: C.track }[heroTier];
+  font('700', 14);
+  const bw = c.measureText(tlabel[heroTier]).width + 28;
+  rptRoundRect_(c, bx, y + 78, bw, 32, 16); c.fillStyle = bg; c.fill();
+  txt(tlabel[heroTier], bx + 14, y + 99, col(heroTier));
+  const gap = avg - T;
+  font('600', 15);
+  txt(gap >= 0 ? 'Di atas target (+' + gap.toFixed(2) + ' pt)' : 'Kurang ' + Math.abs(gap).toFixed(2) + ' pt dari target', P + 28, y + 140, col(heroTier));
+  if (d.wow && num(d.wow.delta) !== null) {
+    const dl = Number(d.wow.delta);
+    font('500', 14);
+    txt((dl >= 0 ? '▲ +' : '▼ ') + dl.toFixed(2) + ' pt vs ' + d.wow.prevWeek, P + 28, y + 164, dl >= 0 ? C.tercapai : C.kritis);
+  }
+  const lo = avg >= 90 ? 90 : 70, hx = P + 28, hw = IW - 56, hy = y + 182;
+  rptRoundRect_(c, hx, hy, hw, 10, 5); c.fillStyle = C.track; c.fill();
+  rptRoundRect_(c, hx, hy, Math.max(10, hw * Math.max(0.02, Math.min(1, (avg - lo) / (100 - lo)))), 10, 5); c.fillStyle = col(heroTier); c.fill();
+  const tx = hx + hw * Math.max(0, Math.min(1, (T - lo) / (100 - lo)));
+  c.fillStyle = C.text; c.fillRect(tx - 1, hy - 4, 2, 18);
+  // sisi kanan: sebaran status
+  const rx = W - P - 28;
+  font('600', 14); txt('STATUS ' + summary.length + ' METRIK', rx, y + 40, C.muted, 'right');
+  font('800', 44); txt(counts.tercapai + ' / ' + summary.length, rx, y + 92, C.text, 'right');
+  font('500', 14); txt('mencapai target', rx, y + 114, C.muted, 'right');
+  let ly = y + 140;
+  ['tercapai', 'waspada', 'kritis', 'nodata'].forEach(k => {
+    if (!counts[k]) return;
+    font('600', 14); txt(counts[k] + ' ' + tlabel[k], rx, ly, col(k), 'right'); ly += 20;
+  });
+
+  // metrik
+  y += hHero + 20;
+  card(y, hMetrics);
+  font('700', 18); txt('Performa Metrik', P + 28, y + 40, C.text);
+  font('500', 13); txt('garis hitam = target', W - P - 28, y + 40, C.muted, 'right');
+  let ry = y + hMetricsHead;
+  summary.forEach((m, i) => {
+    const v = num(m.blended), t = tier(v);
+    if (i) { c.fillStyle = C.line; c.fillRect(P + 28, ry - 10, IW - 56, 1); }
+    font('600', 15); txt(rptFit_(c, m.label, IW - 260), P + 28, ry + 14, C.text);
+    font('800', 20); txt(pct(v), W - P - 28, ry + 16, col(t), 'right');
+    let by = ry + 28;
+    if (!isLM) { font('500', 12.5); txt('Reguler ' + pct(m.regular) + ' · High ' + pct(m.high), P + 28, ry + 32, C.muted); by = ry + 42; }
+    bar(P + 28, by, IW - 56, v, col(t));
+    ry += rowH;
+  });
+
+  // prioritas
+  y += hMetrics + 20;
+  card(y, hPrio);
+  if (!crit.length) {
+    font('700', 17); txt('Seluruh metrik mencapai target minimal ' + T.toFixed(2) + '%', P + 28, y + 48, C.tercapai);
+  } else {
+    const ph = priorityHeading_();
+    font('700', 18); txt(ph.title, P + 28, y + 40, C.text);
+    font('500', 13); txt(rptFit_(c, ph.period, 340), W - P - 28, y + 40, C.muted, 'right');
+    let py = y + hPrioHead;
+    prio.forEach((p, i) => {
+      const it = p.it, t = tier(it.blendedScore) === 'waspada' ? 'waspada' : 'kritis';
+      c.fillStyle = C.line; c.fillRect(P + 28, py - 8, IW - 56, 1);
+      c.beginPath(); c.arc(P + 28 + 18, py + 30, 18, 0, Math.PI * 2); c.fillStyle = col(t); c.fill();
+      font('800', 17); txt(String(i + 1), P + 28 + 18, py + 36, '#ffffff', 'center');
+      const tx0 = P + 28 + 54;
+      font('700', 16); txt(rptFit_(c, it.metricLabel, IW - 270), tx0, py + 22, C.text);
+      font('800', 18); txt(Number(it.blendedScore).toFixed(2) + '%', W - P - 28, py + 22, col(t), 'right');
+      font('500', 13.5);
+      const hubTxt = 'Hub terendah: ' + (it.worstHub || '—') + (num(it.worstVal) !== null ? ' (' + Number(it.worstVal).toFixed(1) + '%)' : '');
+      txt(rptFit_(c, hubTxt + ' · kurang ' + (T - it.blendedScore).toFixed(2) + ' pt dari target', IW - 120), tx0, py + 44, C.muted);
+      font('500', 14);
+      p.lines.forEach((ln, k) => txt((k === 0 ? 'Aksi: ' : '') + ln, tx0, py + 70 + k * 20, C.text));
+      py += 96 + p.lines.length * 20;
+    });
+  }
+
+  // footer
+  font('500', 12); txt('JTT-07 · dibuat dari Dashboard KPI · target minimal ' + T.toFixed(2) + '%', W / 2, H - 22, C.muted, 'center');
+  return cv;
+}
+
+function rptSlug_(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'semua-data'; }
+
+function openReportImage(opener) {
+  const d = LAST_RINGKASAN;
+  if (!d || !d.summary || !d.summary.length) { toast('Buka halaman Ringkasan dan tunggu data tampil dulu.', true); return; }
+  RPT.opener = opener || document.activeElement;
+  const go = () => {
+    let cv;
+    try { cv = buildReportCanvas_(d); } catch (e) { toast('Gagal membuat gambar: ' + (e && e.message ? e.message : e), true); return; }
+    RPT.dataUrl = cv.toDataURL('image/png');
+    const dt = new Date(), p2 = n => String(n).padStart(2, '0');
+    RPT.filename = 'jtt07_' + STATE.mode.toLowerCase() + '_ringkasan_' + rptSlug_(getFilterLabel()) + '_' + dt.getFullYear() + p2(dt.getMonth() + 1) + p2(dt.getDate()) + '.png';
+    showReportDialog_();
+  };
+  if (document.fonts && document.fonts.load) {
+    Promise.all([document.fonts.load('800 30px Inter'), document.fonts.load('500 14px Inter')]).then(go, go);
+  } else go();
+}
+
+function showReportDialog_() {
+  closeReportImage(true);
+  const canCopy = !!(navigator.clipboard && window.ClipboardItem);
+  const ov = document.createElement('div');
+  ov.className = 'rpt-overlay'; ov.id = 'rptOverlay';
+  ov.innerHTML =
+    '<div class="rpt-dialog" role="dialog" aria-modal="true" aria-labelledby="rptTitle">' +
+      '<div class="rpt-head"><h2 id="rptTitle">Gambar laporan Ringkasan</h2>' +
+      '<button type="button" class="btn-icon" id="rptClose" aria-label="Tutup">' + ICON.x + '</button></div>' +
+      '<div class="rpt-body"><img id="rptImg" alt="Pratinjau gambar laporan Ringkasan KPI"></div>' +
+      '<div class="rpt-actions">' +
+        (canCopy ? '<button type="button" class="btn-trend-tab" id="rptCopy">' + ICON.clipboard + ' Salin gambar</button>' : '') +
+        '<button type="button" class="btn-trend-tab active" id="rptDl">' + ICON.download + ' Unduh PNG</button>' +
+      '</div></div>';
+  document.body.appendChild(ov);
+  document.getElementById('rptImg').src = RPT.dataUrl;
+  document.body.classList.add('rpt-open');
+
+  const dlg = ov.querySelector('.rpt-dialog');
+  document.getElementById('rptClose').addEventListener('click', () => closeReportImage());
+  ov.addEventListener('click', e => { if (e.target === ov) closeReportImage(); });
+  document.getElementById('rptDl').addEventListener('click', downloadReportImage);
+  const cp = document.getElementById('rptCopy'); if (cp) cp.addEventListener('click', copyReportImage);
+
+  RPT.keyHandler = e => {
+    if (e.key === 'Escape') { e.preventDefault(); closeReportImage(); return; }
+    if (e.key !== 'Tab') return;
+    const f = Array.from(dlg.querySelectorAll('button')).filter(b => !b.disabled);
+    if (!f.length) return;
+    const first = f[0], last = f[f.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  };
+  document.addEventListener('keydown', RPT.keyHandler);
+  document.getElementById('rptDl').focus();
+}
+
+function closeReportImage(silent) {
+  const ov = document.getElementById('rptOverlay');
+  if (ov) ov.remove();
+  document.body.classList.remove('rpt-open');
+  if (RPT.keyHandler) { document.removeEventListener('keydown', RPT.keyHandler); RPT.keyHandler = null; }
+  if (!silent && RPT.opener && document.body.contains(RPT.opener) && RPT.opener.focus) RPT.opener.focus();
+}
+
+function rptBlob_() {
+  return fetch(RPT.dataUrl).then(r => r.blob());
+}
+function downloadReportImage() {
+  rptBlob_().then(b => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(b); a.download = RPT.filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    toast('Gambar diunduh: ' + RPT.filename);
+  }).catch(() => toast('Gagal mengunduh gambar.', true));
+}
+function copyReportImage() {
+  rptBlob_()
+    .then(b => navigator.clipboard.write([new ClipboardItem({ 'image/png': b })]))
+    .then(() => toast('Gambar disalin ke clipboard'))
+    .catch(() => toast('Browser menolak menyalin gambar. Gunakan Unduh PNG.', true));
+}
+</script>

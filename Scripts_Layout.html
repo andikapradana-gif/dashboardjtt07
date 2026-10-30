@@ -1,0 +1,34 @@
+<script>
+/* ─── UI PATCH v1: tinggi topbar, fade nav, aksesibilitas ─── */
+(function () {
+  const bar = document.querySelector('.topstack') || document.querySelector('.topbar');
+  if (bar) {
+    const setH = () => document.documentElement.style.setProperty('--topbar-h', bar.offsetHeight + 'px');
+    if ('ResizeObserver' in window) new ResizeObserver(setH).observe(bar);
+    window.addEventListener('resize', setH); setH();
+  }
+
+  const nav = document.getElementById('mainNav');
+  if (nav) {
+    const upd = () => {
+      const max = nav.scrollWidth - nav.clientWidth;
+      nav.classList.toggle('fade-l', nav.scrollLeft > 4);
+      nav.classList.toggle('fade-r', nav.scrollLeft < max - 4);
+    };
+    nav.addEventListener('scroll', upd, { passive: true });
+    window.addEventListener('resize', upd);
+    if ('ResizeObserver' in window) new ResizeObserver(upd).observe(nav);
+    upd();
+
+    const syncCurrent = () => nav.querySelectorAll('button').forEach(b => {
+      if (b.classList.contains('active')) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
+    });
+    new MutationObserver(syncCurrent).observe(nav, { subtree: true, attributes: true, attributeFilter: ['class'] });
+    syncCurrent();
+  }
+
+  document.querySelectorAll('.btn-icon, .btn-back').forEach(b => {
+    if (!b.getAttribute('aria-label')) b.setAttribute('aria-label', b.getAttribute('title') || 'Tombol');
+  });
+})();
+</script>

@@ -1,0 +1,210 @@
+<script>
+if (!STATE.trendTab) STATE.trendTab = 'ALL_HUB';
+if (!STATE.trendCmp) STATE.trendCmp = 'L1_L0';   // L1_L0 (terbaru) | L2_L1 | BOTH
+let TREND_LAST = null;
+
+function switchTrendCmp(v) {
+  STATE.trendCmp = ['L1_L0', 'L2_L1', 'BOTH'].indexOf(v) >= 0 ? v : 'L1_L0';
+  if (TREND_LAST && STATE.page === 'trendweekly') renderWeeklyTrend(TREND_LAST);
+}
+/* Selisih (pt) minggu LfromW -> LtoW dari array skor (urut lama -> baru). null bila salah satu kosong. */
+function trendDeltaVal_(arr, from, to) {
+  const n = (arr || []).length;
+  const g = k => { const v = arr[n - 1 - k]; return (v === null || v === undefined || isNaN(v)) ? null : Number(v); };
+  const a = g(from), b = g(to);
+  return (a === null || b === null) ? null : b - a;
+}
+function trendDeltaHead_() {
+  const th = t => '<th style="text-align: center;">' + t + '</th>';
+  const c = STATE.trendCmp;
+  if (c === 'BOTH') return th('Delta L2W → L1W') + th('Delta L1W → L0W');
+  return th(c === 'L2_L1' ? 'Delta L2W → L1W' : 'Delta (WoW)');
+}
+function trendDeltaCells_(arr, serverDelta) {
+  const td = v => '<td style="text-align: center;">' + formatTrendDelta(v) + '</td>';
+  const c = STATE.trendCmp;
+  if (c === 'BOTH') return td(trendDeltaVal_(arr, 2, 1)) + td(trendDeltaVal_(arr, 1, 0));
+  if (c === 'L2_L1') return td(trendDeltaVal_(arr, 2, 1));
+  return td(serverDelta !== undefined ? serverDelta : trendDeltaVal_(arr, 1, 0));
+}
+
+/* Nilai kosong (null / undefined / NaN) tampil "—", bukan error */
+function fmtTrendPct_(s) { return (s === null || s === undefined || isNaN(s)) ? '—' : Number(s).toFixed(2) + '%'; }
+
+function loadWeeklyTrend() {
+  showSkeletonLoading();
+  const metricFilterEl = document.getElementById('metricFilter');
+  const metricFilter = metricFilterEl ? metricFilterEl.value : '';
+
+  if (metricFilterEl) {
+    metricFilterEl.disabled = false;
+    metricFilterEl.style.pointerEvents = 'auto';
+  }
+
+  const cacheKey = `trend_view_${STATE.mode}_${STATE.trendTab}_${metricFilter || 'all'}_${STATE.hub || 'all'}`;
+  // lewat callApiCached: ada penjaga respons usang, anti-permintaan ganda, dan try/catch saat render
+  callApiCached(cacheKey, 'apiGetComprehensiveTrend', [STATE.mode, STATE.trendTab, metricFilter, STATE.hub],
+    'trendweekly', renderWeeklyTrend, renderTrendErrorWithTabs);
+}
+
+function switchTrendTab(tabType) {
+  STATE.trendTab = tabType;
+  loadWeeklyTrend();
+}
+
+function renderWeeklyTrend(data) {
+  if (!data || !data.weeks || !data.weeks.length) return showEmpty('Data tren minggu tidak ditemukan.');
+
+  const { weeks, overallTrend, trendData, selectedMetric } = data;
+  TREND_LAST = data;
+  const arrOf = m => weeks.map((w, i) => m.scores['L' + (weeks.length - 1 - i) + 'W']);
+  let sortedTrend = trendData || [];
+  if (STATE.trendTab === 'BY_METRIC' && STATE.trendCmp === 'L2_L1') {   // urut dari delta terburuk sesuai pembanding
+    sortedTrend = sortedTrend.slice().sort((a, b) => {
+      const da = trendDeltaVal_(arrOf(a), 2, 1), db = trendDeltaVal_(arrOf(b), 2, 1);
+      return ((da === null) - (db === null)) || (da - db);
+    });
+  }
+  const isCLorPIC = USER_ACCESS && (USER_ACCESS.role === 'City Lead' || USER_ACCESS.role === 'PIC');
+
+  const getScoreBadgeStyle = (score) => {
+    if (score === null || score === undefined || isNaN(score)) return '';
+    if (score >= TARGET_THRESHOLD) return 'background: var(--ok-bg); color: var(--ok-text); font-weight: 700;';
+    if (score >= WARN_THRESHOLD) return 'background: var(--warn-bg); color: var(--warn-text); font-weight: 700;';
+    return 'background: var(--crit-bg); color: var(--crit-text); font-weight: 700;';
+  };
+
+  let html = `
+    <div class="card" style="margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+      <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+        ${isCLorPIC ? `
+        <button onclick="switchTrendTab('OVERALL')" class="btn-trend-tab ${STATE.trendTab === 'OVERALL' ? 'active' : ''}" style="display:inline-flex; align-items:center; gap:6px;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg> Tren Keseluruhan JTT-07
+        </button>` : ''}
+        <button onclick="switchTrendTab('ALL_HUB')" class="btn-trend-tab ${STATE.trendTab === 'ALL_HUB' ? 'active' : ''}" style="display:inline-flex; align-items:center; gap:6px;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21h18"/><path d="M9 8h1"/><path d="M9 12h1"/><path d="M9 16h1"/><path d="M14 8h1"/><path d="M14 12h1"/><path d="M14 16h1"/><path d="M5 21V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16"/></svg> Tren Pencapaian per Hub
+        </button>
+        <button onclick="switchTrendTab('BY_METRIC')" class="btn-trend-tab ${STATE.trendTab === 'BY_METRIC' ? 'active' : ''}" style="display:inline-flex; align-items:center; gap:6px;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg> Tren per Metrik
+        </button>
+      </div>
+    </div>
+  `;
+
+  const cmpOpt = (v, t) => `<option value="${v}" ${STATE.trendCmp === v ? 'selected' : ''}>${t}</option>`;
+  html += `
+    <div class="card" style="margin-bottom: 16px; padding: 10px 16px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+      <label for="trendCmp" style="font-size: 12px; font-weight: 700; color: var(--text-muted);">Pembanding delta</label>
+      <select id="trendCmp" class="select" onchange="switchTrendCmp(this.value)">
+        ${cmpOpt('L1_L0', 'L1W → L0W (minggu terbaru)')}
+        ${cmpOpt('L2_L1', 'L2W → L1W (minggu sebelumnya)')}
+        ${cmpOpt('BOTH', 'Keduanya (L2W→L1W dan L1W→L0W)')}
+      </select>
+      ${weeks.length < 3 && STATE.trendCmp !== 'L1_L0' ? '<span class="subtitle" style="color:var(--warn-text);">Data kurang dari 3 minggu, delta L2W → L1W belum bisa dihitung.</span>' : ''}
+    </div>`;
+
+  if (STATE.trendTab === 'BY_METRIC' && selectedMetric) {
+    html += `
+      <div class="card" style="margin-bottom: 16px; padding: 12px 16px; background: var(--bg); border-left: 4px solid var(--primary);">
+        <span style="font-size: 12px; color: var(--text-muted); font-weight: 700;">METRIK AKTIF:</span>
+        <h4 style="font-size: 14px; font-weight: 800; color: var(--text-main); margin-top: 2px;">${esc(selectedMetric.label)} (${esc(selectedMetric.key)})</h4>
+        <div style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">* Ubah opsi metrik pada filter topbar untuk melihat metrik lainnya. Diurutkan dari WoW Delta terburuk.</div>
+      </div>
+    `;
+  }
+
+  html += `
+    <div class="heatmap-wrap">
+      <table class="heatmap-table">
+        <thead>
+          <tr>
+  `;
+
+  if (STATE.trendTab === 'OVERALL') {
+    html += `<th class="sticky-col">Scope / Divisi</th>`;
+  } else {
+    html += `<th class="sticky-col">Nama Hub</th>`;
+  }
+
+  weeks.forEach((w, idx) => {
+    const label = `L${weeks.length - 1 - idx}W`;
+    html += `<th style="text-align: center;">${label}<br><span style="font-size: 10px; font-weight: normal; color: var(--text-muted);">${esc(w)}</span></th>`;
+  });
+  html += trendDeltaHead_() + `<th style="text-align: center;">Tren</th></tr></thead><tbody>`;
+
+  if (STATE.trendTab === 'OVERALL' && overallTrend) {
+    overallTrend.forEach(row => {
+      const isTotal = row.scope === 'OVERALL JTT-07';
+      html += `<tr style="${isTotal ? 'background: rgba(0,113,227,0.06); font-weight: 800;' : ''}">`;
+      html += `<td class="sticky-col"><b>${esc(row.scope)}</b></td>`;
+      row.scores.forEach(score => {
+        const style = getScoreBadgeStyle(score);
+        html += `<td style="text-align: center;"><span style="padding: 4px 8px; border-radius: 6px; ${style}">${fmtTrendPct_(score)}</span></td>`;
+      });
+      html += `${trendDeltaCells_(row.scores, row.delta)}<td style="text-align:center">${spark(row.scores)}</td></tr>`;
+    });
+  } 
+  else if ((STATE.trendTab === 'ALL_HUB' || STATE.trendTab === 'BY_METRIC') && trendData) {
+    if (!trendData.length) {
+      html += `<tr><td colspan="${weeks.length + 2}" style="text-align:center; padding: 20px;">Tidak ada data yang ditemukan.</td></tr>`;
+    } else {
+      sortedTrend.forEach(m => {
+        html += `<tr><td class="sticky-col"><b>${esc(m.hub)}</b></td>`;
+        weeks.forEach((w, idx) => {
+          const score = m.scores[`L${weeks.length - 1 - idx}W`];
+          const style = getScoreBadgeStyle(score);
+          html += `<td style="text-align: center;"><span style="padding: 4px 8px; border-radius: 6px; ${style}">${fmtTrendPct_(score)}</span></td>`;
+        });
+        html += `${trendDeltaCells_(arrOf(m), m.delta)}<td style="text-align:center">${spark(arrOf(m))}</td></tr>`;
+      });
+    }
+  }
+
+  html += `</tbody></table></div>`;
+  document.getElementById('pageContent').innerHTML = html;
+  setUpdated();
+}
+
+/* Selisih dalam percentage point (pt). null = belum ada pembanding, bukan "0". */
+function formatTrendDelta(val) {
+  if (val === null || val === undefined || isNaN(val)) {
+    return `<span class="delta-pill delta-neutral" title="Data pembanding belum ada">${ICON.minus} —</span>`;
+  }
+  const v = Number(val);
+  if (v > 0.005)  return `<span class="delta-pill delta-up">${ICON.up} +${v.toFixed(2)} pt</span>`;
+  if (v < -0.005) return `<span class="delta-pill delta-down">${ICON.down} ${v.toFixed(2)} pt</span>`;
+  return `<span class="delta-pill delta-neutral">${ICON.minus} 0.00 pt</span>`;
+}
+
+function renderTrendErrorWithTabs(errorMsg) {
+  const isCLorPIC = USER_ACCESS && (USER_ACCESS.role === 'City Lead' || USER_ACCESS.role === 'PIC');
+
+  let html = `
+    <div class="card" style="margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+      <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+        ${isCLorPIC ? `
+        <button onclick="switchTrendTab('OVERALL')" class="btn-trend-tab ${STATE.trendTab === 'OVERALL' ? 'active' : ''}" style="display:inline-flex; align-items:center; gap:6px;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg> Tren Keseluruhan JTT-07
+        </button>` : ''}
+        <button onclick="switchTrendTab('ALL_HUB')" class="btn-trend-tab ${STATE.trendTab === 'ALL_HUB' ? 'active' : ''}" style="display:inline-flex; align-items:center; gap:6px;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21h18"/><path d="M9 8h1"/><path d="M9 12h1"/><path d="M9 16h1"/><path d="M14 8h1"/><path d="M14 12h1"/><path d="M14 16h1"/><path d="M5 21V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16"/></svg> Tren Pencapaian per Hub
+        </button>
+        <button onclick="switchTrendTab('BY_METRIC')" class="btn-trend-tab ${STATE.trendTab === 'BY_METRIC' ? 'active' : ''}" style="display:inline-flex; align-items:center; gap:6px;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg> Tren per Metrik
+        </button>
+      </div>
+    </div>
+
+    <div class="card" style="padding: 24px; text-align: center; background: var(--crit-bg); border: 1px solid var(--border); border-radius: 16px;">
+      <div style="display:flex; justify-content:center; margin-bottom:8px; color:var(--crit-text);">
+        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+      </div>
+      <h4 style="color: var(--crit-text); font-size: 15px; font-weight: 700; margin-bottom: 4px;">Akses Dibatasi</h4>
+      <p style="color: var(--crit-text); font-size: 13px; margin: 0;">${esc(errorMsg)}</p>
+      <p style="color: var(--crit-text); font-size: 11px; margin-top: 12px;">Silakan pilih tab <b>Tren Pencapaian per Hub</b> atau <b>Tren per Metrik</b> di atas.</p>
+    </div>
+  `;
+  document.getElementById('pageContent').innerHTML = html;
+  setUpdated();
+}
+</script>

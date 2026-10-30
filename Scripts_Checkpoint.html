@@ -1,0 +1,132 @@
+<script>
+/* ═══ GOOGLE MEET CHECKPOINT JUMAT (CL / PIC) ═══ */
+const CPT = { plan: null, meet: '', msgEdited: false, opener: null, keyHandler: null };
+
+function cptMessage_() {
+  const p = CPT.plan; if (!p) return '';
+  const hubs = String(p.hubs || '').split(',').map(s => s.trim()).filter(Boolean);
+  const L = [];
+  L.push('*CHECKPOINT HYPERCARE ' + STATE.mode + ' · JTT-07*');
+  L.push('Periode Hypercare: ' + p.week);
+  L.push('Hub: ' + (hubs.length ? hubs.join(', ') : '—'));
+  L.push('');
+  L.push('Agenda:');
+  L.push('1. Progress angka metrik fokus per hub');
+  L.push('2. Kendala / need support dari hub');
+  L.push('3. Tindak lanjut sampai pekan berikutnya');
+  L.push('');
+  L.push('*' + hcbVal_('cptTitle') + '*');
+  L.push('Hari/tanggal: ' + hcbDateLabel_(hcbVal_('cptDate')));
+  L.push('Jam: ' + (hcbVal_('cptTime') || '—').replace(':', '.') + ' WIB');
+  L.push('Google Meet: ' + HCB_PH);
+  L.push('');
+  L.push('Mohon update root cause & action plan di dashboard sebelum checkpoint. Terima kasih.');
+  return L.join('\n');
+}
+function cptRefresh_() { const ta = document.getElementById('cptMsg'); if (ta && !CPT.msgEdited) ta.value = cptMessage_(); }
+function cptFinal_() { return hcbVal_('cptMsg').split(HCB_PH).join(CPT.meet || HCB_PH); }
+
+function openCheckpoint(opener) {
+  CPT.opener = opener || document.activeElement; CPT.meet = ''; CPT.msgEdited = false; CPT.plan = null;
+  const btn = opener; if (btn && btn.disabled) return;
+  if (btn) btn.disabled = true;
+  google.script.run
+    .withSuccessHandler(res => {
+      if (btn) btn.disabled = false;
+      if (!res || !res.success) { toast('Gagal: ' + (res ? res.error : 'respons kosong'), true); return; }
+      CPT.plan = res.data.plan; showCheckpointDialog_(res.data);
+    })
+    .withFailureHandler(e => { if (btn) btn.disabled = false; toast('Gagal: ' + ((e && e.message) || 'kesalahan jaringan'), true); })
+    .apiGetCheckpointDraft(STATE.mode);
+}
+
+function showCheckpointDialog_(draft) {
+  closeCheckpoint(true);
+  const p = draft.plan;
+  const fld = 'width:100%; background:var(--card-solid); color:var(--text-main); border:1px solid var(--border); border-radius:6px; padding:8px; font-size:13px; font-family:inherit;';
+  const lab = 'display:block; font-size:11px; font-weight:700; color:var(--text-muted); margin:10px 0 4px;';
+  const ov = document.createElement('div'); ov.className = 'rpt-overlay'; ov.id = 'cptOverlay';
+  ov.innerHTML =
+    '<div class="rpt-dialog" role="dialog" aria-modal="true" aria-labelledby="cptTtl">' +
+      '<div class="rpt-head"><h2 id="cptTtl">Google Meet Checkpoint (Jumat)</h2><button type="button" class="btn-icon" id="cptClose" aria-label="Tutup">' + ICON.x + '</button></div>' +
+      '<div class="rpt-body" style="background:var(--card-solid)">' +
+        '<div class="subtitle">Mengikuti Hypercare: <b>' + esc(p.title || p.week) + '</b> · guest sama dengan meeting Hypercare tersebut</div>' +
+        '<label style="' + lab + '" for="cptTitle">Judul meeting</label>' +
+        '<input id="cptTitle" style="' + fld + '" maxlength="150" value="' + esc('Checkpoint Hypercare ' + STATE.mode + ' JTT-07 · ' + p.week) + '">' +
+        '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px;">' +
+          '<div><label style="' + lab + '" for="cptDate">Tanggal (harus Jumat)</label><input type="date" id="cptDate" style="' + fld + '" value="' + esc(draft.suggestedDate) + '"><div class="subtitle" id="cptDay" style="margin-top:4px"></div></div>' +
+          '<div><label style="' + lab + '" for="cptTime">Jam mulai (WIB)</label><input type="time" id="cptTime" style="' + fld + '" value="14:00"></div>' +
+          '<div><label style="' + lab + '" for="cptDur">Durasi</label><select id="cptDur" style="' + fld + '"><option value="30">30 menit</option><option value="45">45 menit</option><option value="60" selected>60 menit</option><option value="90">90 menit</option></select></div>' +
+        '</div>' +
+        '<label style="' + lab + '" for="cptGuests">Guest (email)</label>' +
+        '<textarea id="cptGuests" rows="3" style="' + fld + ' resize:vertical;"></textarea>' +
+        '<div class="subtitle" style="margin-top:4px">Penyelenggara: ' + esc(draft.organizer || 'akun Anda') + ' (otomatis)</div>' +
+        '<label style="' + lab + '" for="cptMsg">Pesan blast (boleh diedit)</label>' +
+        '<textarea id="cptMsg" rows="11" style="' + fld + ' resize:vertical; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px;"></textarea>' +
+        '<div id="cptResult" class="subtitle" style="margin-top:8px" role="status" aria-live="polite"></div>' +
+      '</div>' +
+      '<div class="rpt-actions">' +
+        '<button type="button" class="btn-trend-tab" id="cptCopy">' + ICON.clipboard + ' Salin pesan</button>' +
+        '<button type="button" class="btn-trend-tab" id="cptWa">Buka WhatsApp</button>' +
+        '<button type="button" class="btn-trend-tab active" id="cptMeet">Buat Google Meet</button>' +
+      '</div></div>';
+  document.body.appendChild(ov); document.body.classList.add('rpt-open');
+  document.getElementById('cptGuests').value = String(p.guests || '').split(/[\s,;]+/).filter(Boolean).join('\n');
+  const day = () => {
+    const n = document.getElementById('cptDay'), v = hcbVal_('cptDate'); if (!n) return;
+    const isFri = /^\d{4}-\d{2}-\d{2}$/.test(v) && new Date(v + 'T12:00:00').getDay() === 5;
+    n.textContent = hcbDateLabel_(v) + (isFri || !v ? '' : ' — bukan hari Jumat');
+    n.style.color = isFri || !v ? '' : 'var(--crit-text)';
+  };
+  ['cptTitle', 'cptDate', 'cptTime'].forEach(id => document.getElementById(id).addEventListener('input', () => { day(); cptRefresh_(); }));
+  document.getElementById('cptMsg').addEventListener('input', () => { CPT.msgEdited = true; });
+  document.getElementById('cptClose').addEventListener('click', () => closeCheckpoint());
+  ov.addEventListener('click', e => { if (e.target === ov) closeCheckpoint(); });
+  document.getElementById('cptCopy').addEventListener('click', () => copyText(cptFinal_(), 'Pesan checkpoint disalin'));
+  document.getElementById('cptWa').addEventListener('click', () => window.open('https://wa.me/?text=' + encodeURIComponent(cptFinal_()), '_blank', 'noopener'));
+  document.getElementById('cptMeet').addEventListener('click', cptCreate_);
+  day(); cptRefresh_();
+
+  const dlg = ov.querySelector('.rpt-dialog');
+  CPT.keyHandler = e => {
+    if (e.key === 'Escape') { e.preventDefault(); closeCheckpoint(); return; }
+    if (e.key !== 'Tab') return;
+    const f = Array.from(dlg.querySelectorAll('button,input,select,textarea')).filter(b => !b.disabled);
+    if (!f.length) return;
+    const first = f[0], last = f[f.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  };
+  document.addEventListener('keydown', CPT.keyHandler);
+  document.getElementById('cptTitle').focus();
+}
+
+function cptCreate_() {
+  const btn = document.getElementById('cptMeet'), out = document.getElementById('cptResult');
+  if (!btn || btn.disabled) return;
+  const label = btn.textContent; btn.disabled = true; btn.textContent = 'Membuat…';
+  const done = () => { btn.disabled = false; btn.textContent = label; };
+  google.script.run
+    .withSuccessHandler(res => {
+      done();
+      if (!res || !res.success) { toast('Gagal: ' + (res ? res.error : 'respons kosong'), true); return; }
+      const r = res.data; CPT.meet = r.meetLink || '';
+      const ta = document.getElementById('cptMsg');
+      if (ta && CPT.meet) { CPT.msgEdited = true; ta.value = ta.value.split(HCB_PH).join(CPT.meet); }
+      if (out) out.innerHTML = 'Checkpoint dibuat · ' + esc(String(r.guests)) + ' guest diundang. ' + (CPT.meet ? '<a href="' + esc(CPT.meet) + '" target="_blank" rel="noopener">Buka Google Meet</a>' : 'Link Meet belum tersedia, cek Google Calendar.') + (r.warning ? '<br>' + esc(r.warning) : '');
+      toast('Berhasil: Google Meet checkpoint dibuat. Sekarang salin / kirim pesan.');
+    })
+    .withFailureHandler(e => { done(); toast('Gagal: ' + ((e && e.message) || 'kesalahan jaringan'), true); })
+    .apiCreateCheckpointMeeting({
+      mode: STATE.mode, title: hcbVal_('cptTitle'), date: hcbVal_('cptDate'), time: hcbVal_('cptTime'),
+      duration: hcbVal_('cptDur'), guests: hcbVal_('cptGuests'), description: hcbVal_('cptMsg')
+    });
+}
+
+function closeCheckpoint(silent) {
+  const ov = document.getElementById('cptOverlay'); if (ov) ov.remove();
+  document.body.classList.remove('rpt-open');
+  if (CPT.keyHandler) { document.removeEventListener('keydown', CPT.keyHandler); CPT.keyHandler = null; }
+  if (!silent && CPT.opener && document.body.contains(CPT.opener) && CPT.opener.focus) CPT.opener.focus();
+}
+</script>

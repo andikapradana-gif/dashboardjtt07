@@ -1,0 +1,541 @@
+<script>
+/* ═══ HYPERCARE v2 — hub & metrik ditentukan otomatis (CL / PIC) ═══ */
+const HCV2 = { topN: 10, maxM: 3, last: null, view: 'hub' };
+
+/* Salin isian form di layar ke HCV2.last agar tidak hilang saat pindah tampilan (Per Hub <-> Fokus per Metrik) */
+function hcv2SyncFromDom_() {
+  const d = HCV2.last; if (!d || !d.items) return;
+  document.querySelectorAll('#pageContent [data-hc]').forEach(el => {
+    const f = el.dataset;
+    const h = d.items.find(x => x.hub === f.hub && String(x.group) === f.week); if (!h) return;
+    const is = h.issues.find(i => i.key === f.key); if (!is) return;
+    const v = p => { const e = document.getElementById(p + '_' + f.fid); return e ? e.value : null; };
+    const rc = v('rc'), ap = v('ap'), st = v('st'), dd = v('dd'), pic = v('pic');
+    const wy = v('wy'); if (wy !== null) is.whyChain = wy;
+    if (rc !== null) is.rootCause = rc;
+    if (ap !== null) is.actionPlan = ap;
+    if (st !== null) is.status = st;
+    if (dd !== null) is.dueDate = dd;
+    if (pic !== null) is.pic = pic;
+    const fd = hcv2ReadFinding_(f.fid);
+    if (fd) { const o = is.temuan || {}; fd.jenis = (fd.q !== (o.q || '')) ? hcv2JenisOf_(fd.q) : (o.jenis || hcv2JenisOf_(fd.q)); is.temuan = fd; }
+  });
+}
+
+/* ═══ Root cause rekomendasi AI (5 Why) ═══ */
+function hcv2WhyHtml_(chain, fid) {
+  let c = null; try { c = chain ? JSON.parse(chain) : null; } catch (e) {}
+  const whys = (c && c.whys) || [];
+  const rows = [0, 1, 2, 3, 4].map(n => `<div style="margin-top:6px;"><div style="font-size:11px; font-weight:700; color:var(--text-muted);">Why ${n + 1}</div>
+    <input data-why="${n}" value="${esc(whys[n] || '')}" maxlength="220" placeholder="${n < 3 ? 'Tulis atau buat draft AI' : (n === 3 ? 'ubah sesuai kondisi lapangan' : 'akar masalah')}" oninput="hcv2WhyEdit_('${fid}')" style="${HCV2_FIELD}"></div>`).join('');
+  return `<div style="background:var(--card-solid); border:1px solid var(--border); border-radius:6px; padding:8px 10px; margin:0 0 10px; font-size:12px;" id="why_${fid}">
+    <div style="font-size:11px; font-weight:700; color:var(--text-muted);">5 WHY — edit sesuai kondisi lapangan</div>
+    ${c && c.note ? `<div style="margin-top:6px; padding:6px 8px; border-radius:6px; font-weight:600; background:var(--warn-bg); color:var(--warn-text);">⚠ ${esc(c.note)}</div>` : ''}${rows}
+    ${c && c.verify ? `<div style="margin-top:6px;"><b>Cek di lapangan:</b> ${esc(c.verify)}</div>` : ''}
+    <div class="subtitle" style="margin-top:4px;">${c && c.ai ? 'Draft AI dari data KPI dan temuan. Verifikasi di lapangan.' : (c && c.auto ? 'Draf otomatis (tanpa AI) dari pola data. Verifikasi di lapangan.' : 'Isi sendiri, atau klik “Rekomendasi (5 Why)” untuk draft.')}${c && c.at ? ' · ' + esc(c.at) : ''}</div></div>`;
+}
+/* Edit Why per baris → perbarui JSON tersembunyi (wy_) lalu autosave yang sudah ada menyimpannya */
+function hcv2WhyEdit_(fid) {
+  const hid = document.getElementById('wy_' + fid); if (!hid) return;
+  let c = {}; try { c = hid.value ? JSON.parse(hid.value) : {}; } catch (e) {}
+  c.whys = Array.from(document.querySelectorAll('#why_' + fid + ' input[data-why]')).map(x => x.value.trim());
+  while (c.whys.length && !c.whys[c.whys.length - 1]) c.whys.pop();
+  c.edited = true;
+  hid.value = JSON.stringify(c);
+}
+function hcv2RcCore_(fid, is) {
+  return `<div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+      <label style="font-size:11px; font-weight:700; color:var(--text-muted);" for="rc_${fid}">ROOT CAUSE</label>
+      <button type="button" class="btn-trend-tab" id="ai_${fid}" style="height:26px; padding:0 10px; font-size:11px;" onclick="hcv2AiRc_('${fid}')">✨ Rekomendasi (5 Why)</button>
+    </div>
+    <textarea id="rc_${fid}" rows="3" placeholder="Klik “Rekomendasi (5 Why)” atau tulis root cause sendiri" style="width:100%; background:var(--card-solid); border:1px solid var(--border); border-radius:6px; padding:8px; font-size:12px; font-family:inherit; resize:vertical; color:var(--text-main); margin:4px 0 10px;">${esc(is.rootCause)}</textarea>
+    <input type="hidden" id="wy_${fid}" value="${esc(is.whyChain || '')}">
+    <div id="wyp_${fid}">${hcv2WhyHtml_(is.whyChain, fid)}</div>`;
+}
+/* Mengembalikan Promise agar bisa dirangkai untuk "semua" */
+function hcv2AiRc_(fid) {
+  return new Promise(resolve => {
+    const f = document.querySelector('[data-hc][data-fid="' + fid + '"]');
+    const btn = document.getElementById('ai_' + fid), sv = document.getElementById('sv_' + fid);
+    if (!f) return resolve(false);
+    const rc = document.getElementById('rc_' + fid);
+    if (rc && rc.value.trim() && !confirm('Root cause sudah terisi. Timpa dengan rekomendasi baru?')) return resolve(false);
+    if (btn) { btn.disabled = true; btn.textContent = 'Menganalisis…'; }
+    google.script.run
+      .withSuccessHandler(res => {
+        if (btn) { btn.disabled = false; btn.textContent = '✨ Rekomendasi (5 Why)'; }
+        if (!res || !res.success) { toast((res && res.error) || 'Gagal membuat rekomendasi.', true); return resolve(false); }
+        document.getElementById('wy_' + fid).value = res.data.whyChain;
+        document.getElementById('wyp_' + fid).innerHTML = hcv2WhyHtml_(res.data.whyChain, fid);
+        rc.value = res.data.rootCause;
+        if (res.data.aiStatus && res.data.aiStatus.state !== 'ok') toast(res.data.aiStatus.message, true);
+        rc.dispatchEvent(new Event('input', { bubbles: true }));   // memicu autosave yang sudah ada
+        resolve(true);
+      })
+      .withFailureHandler(e => {
+        if (btn) { btn.disabled = false; btn.textContent = '✨ Rekomendasi (5 Why)'; }
+        toast((e && e.message) || 'Gagal membuat rekomendasi.', true); resolve(false);
+      })
+      .apiGenerateRootCause5Why(f.dataset.hub, f.dataset.week, f.dataset.key);
+  });
+}
+/* Isi semua root cause yang masih kosong, satu per satu (hemat kuota & aman dari timeout) */
+async function hcv2AiAll_(btn) {
+  const todo = Array.from(document.querySelectorAll('#pageContent [data-hc]'))
+    .filter(f => { const r = document.getElementById('rc_' + f.dataset.fid); return r && !r.value.trim(); });
+  if (!todo.length) return toast('Semua root cause di layar ini sudah terisi.');
+  if (!confirm(todo.length + ' root cause kosong akan diisi rekomendasi. Lanjutkan?')) return;
+  const t0 = btn.textContent; btn.disabled = true; let done = 0;
+  for (const f of todo) { btn.textContent = 'Memproses ' + (++done) + '/' + todo.length + '…'; await hcv2AiRc_(f.dataset.fid); }
+  btn.disabled = false; btn.textContent = t0; toast('Rekomendasi selesai (' + todo.length + ').');
+}
+
+/* ═══ Temuan lapangan → jenis masalah (Plan/Eksekusi) → validasi City Lead/PIC ═══ */
+const HCV2_STATUS = ['Open', 'In progress', 'Menunggu validasi', 'Done'];
+const HCV2_EVT = ['Link foto', 'Jam kejadian', 'Data'];
+const HCV2_FAKTOR = ['Sistem/IT', 'SDM', 'Fasilitas & kendaraan', 'Lainnya'];
+const HCV2_FIELD = 'width:100%; background:var(--card-solid); border:1px solid var(--border); border-radius:6px; padding:8px; font-size:12px; font-family:inherit; color:var(--text-main);';
+const HCV2_LBL = 'font-size:11px; font-weight:700; color:var(--text-muted);';
+
+function hcv2JenisOf_(q) { return q === 'Ya' ? 'Eksekusi' : (q === 'Tidak' ? 'Plan' : ''); }
+
+function hcv2ValBannerHtml_(is) {
+  const v = is.val || {}, who = esc(String(v.by || '').split('@')[0]);
+  let c = '', t = '';
+  if (v.state === 'Disetujui') { c = 'ok'; t = `✓ Disetujui ${who} (${esc(v.at)})`; }
+  else if (v.state === 'Dikembalikan') { c = 'warn'; t = `Jenis diubah ${esc(v.from)} → ${esc(v.to)} oleh ${who}: ${esc(v.note)}. Cek ulang temuan, lalu kirim lagi.`; }
+  else if (v.state === 'Minta bukti') { c = 'warn'; t = `${who} meminta bukti: ${esc(v.note)}`; }
+  else if (is.status === 'Menunggu validasi') { c = 'warn'; t = 'Menunggu validasi City Lead / PIC.'; }
+  if (!t) return '';
+  return `<div style="margin:0 0 10px; padding:8px 10px; border-radius:6px; font-size:12px; font-weight:600; background:var(--${c}-bg); color:var(--${c}-text);">${t}</div>`;
+}
+
+/* Langkah 1 — temuan lapangan (template + kejadian + bukti) */
+function hcv2FindingHtml_(fid, is) {
+  const t = is.temuan || {}, ev = t.ev || [];
+  const opt = (arr, cur, ph) => `<option value="">${ph}</option>` + arr.map(x => `<option value="${esc(x)}" ${x === cur ? 'selected' : ''}>${esc(x)}</option>`).join('');
+  const rows = [0, 1, 2].map(n => { const e = ev[n] || { t: '', v: '' };
+    return `<div style="display:grid; grid-template-columns:120px 1fr; gap:6px; margin-top:6px;">
+      <select data-fd id="evt_${fid}_${n}" style="${HCV2_FIELD}">${opt(HCV2_EVT, e.t, 'Jenis bukti…')}</select>
+      <input data-fd id="evv_${fid}_${n}" value="${esc(e.v)}" placeholder="${n === 0 ? 'Link foto / jam kejadian / data (wajib)' : 'Bukti tambahan (opsional)'}" style="${HCV2_FIELD}"></div>`; }).join('');
+  return `${hcv2ValBannerHtml_(is)}
+    <div style="${HCV2_LBL}">1 · TEMUAN LAPANGAN</div>
+    <textarea data-fd id="td_${fid}" rows="2" placeholder="Tulis kejadiannya (apa, kapan, di mana)" style="${HCV2_FIELD} margin:4px 0 0; resize:vertical;">${esc(t.desc || '')}</textarea>
+    ${rows}
+    <div class="hc-save" id="fsv_${fid}" style="margin:4px 0 10px;"></div>
+    <div style="${HCV2_LBL}">2 · ROOT CAUSE (5 WHY)</div>`;
+}
+
+/* Langkah 3 — jenis masalah lewat pertanyaan penentu */
+function hcv2JenisHtml_(fid, is) {
+  const t = is.temuan || {}, name = 'q_' + fid;
+  const rad = v => `<label style="font-size:12px; margin-right:14px; cursor:pointer;"><input type="radio" data-fd name="${name}" value="${v}" ${t.q === v ? 'checked' : ''}> ${v}</label>`;
+  return `<div style="${HCV2_LBL} margin-top:4px;">3 · JENIS MASALAH</div>
+    <div style="font-size:12px; margin:4px 0;">Jika rencana dijalankan persis, apakah target tercapai?</div>
+    <div>${rad('Ya')}${rad('Tidak')}</div>
+    <div style="font-size:12px; margin:6px 0;">Jenis: <b id="jn_${fid}">${esc(t.jenis || '— (jawab dulu)')}</b>
+      <span class="subtitle"> · ${t.jenis === 'Plan' ? 'rencana atau SOP yang kurang' : (t.jenis === 'Eksekusi' ? 'rencana sudah benar, pelaksanaan yang tidak jalan' : 'Ya = Eksekusi, Tidak = Plan')}</span></div>
+    <div style="font-size:12px; margin:6px 0 4px;">Faktor pendukung <span class="subtitle">(boleh lebih dari satu)</span></div>
+    <div style="margin-bottom:10px;">${HCV2_FAKTOR.map(x => `<label style="font-size:12px; margin-right:12px; cursor:pointer; white-space:nowrap;"><input type="checkbox" data-fd name="f_${fid}" value="${esc(x)}" ${[].concat(t.faktor || []).indexOf(x) >= 0 ? 'checked' : ''}> ${esc(x)}</label>`).join('')}</div>
+    <div style="${HCV2_LBL}">4 · ACTION PLAN</div>`;
+}
+
+function hcv2ReadFinding_(fid) {
+  const el = id => document.getElementById(id);
+  if (!el('td_' + fid)) return null;
+  const qEl = document.querySelector('input[name="q_' + fid + '"]:checked');
+  return {
+    desc: el('td_' + fid).value, q: qEl ? qEl.value : '', faktor: Array.from(document.querySelectorAll('input[name="f_' + fid + '"]:checked')).map(x => x.value),
+    ev: [0, 1, 2].map(n => ({ t: el('evt_' + fid + '_' + n).value, v: el('evv_' + fid + '_' + n).value }))
+  };
+}
+
+const HCV2_FTIMERS = {};
+function hcv2FindingAuto_(hub, week, key, fid) {
+  clearTimeout(HCV2_FTIMERS[fid]);
+  const sv = document.getElementById('fsv_' + fid); if (sv) sv.textContent = 'Menyimpan…';
+  const fd = hcv2ReadFinding_(fid); if (!fd) return;
+  const jn = document.getElementById('jn_' + fid), dj = hcv2JenisOf_(fd.q);
+  if (jn && dj) jn.textContent = dj;
+  HCV2_FTIMERS[fid] = setTimeout(() => {
+    google.script.run
+      .withSuccessHandler(res => {
+        if (res && res.success) {
+          if (sv) sv.textContent = 'Temuan tersimpan ' + new Date().toLocaleTimeString('id-ID');
+          Object.keys(FRONTEND_CACHE).forEach(k => { if (k.startsWith('rekomendasi_')) delete FRONTEND_CACHE[k]; });
+        } else { if (sv) sv.textContent = 'Gagal menyimpan'; toast(res ? res.error : 'Gagal menyimpan temuan.', true); }
+      })
+      .withFailureHandler(e => { if (sv) sv.textContent = 'Gagal menyimpan'; toast((e && e.message) || 'Gagal menyimpan temuan.', true); })
+      .apiSaveHypercareFinding(hub, week, key, fd);
+  }, 900);
+}
+(function () {
+  const root = document.getElementById('pageContent'); if (!root) return;
+  const h = e => {
+    if (!e.target.hasAttribute || !e.target.hasAttribute('data-fd')) return;
+    const f = e.target.closest('[data-hc]'); if (!f) return;
+    hcv2FindingAuto_(f.dataset.hub, f.dataset.week, f.dataset.key, f.dataset.fid);
+  };
+  root.addEventListener('input', h); root.addEventListener('change', h);
+})();
+
+/* ═══ Layar City Lead / PIC: ringkasan Plan vs Eksekusi + antrean validasi ═══ */
+function hcv2LoadVal_(mode, week) {
+  const root = document.getElementById('pageContent'); if (!root) return;
+  let box = document.getElementById('hcv2Val');
+  if (!box) { box = document.createElement('div'); box.id = 'hcv2Val'; box.style.marginBottom = '16px'; root.insertBefore(box, root.firstChild); }
+  box.innerHTML = '<div class="card"><div class="subtitle">Memuat antrean validasi…</div></div>';
+  google.script.run
+    .withSuccessHandler(res => { if (!res || !res.success) { box.remove(); return; } HCV2.val = res.data; hcv2ValRender_(box, res.data); })
+    .withFailureHandler(() => box.remove())
+    .apiGetHypercareValidation(mode, week);
+}
+function hcv2ValRender_(box, v) {
+  const s = v.summary, pc = n => s.total ? Math.round(n / s.total * 100) : 0;
+  const fk = Object.keys(s.faktor || {}).sort((a, b) => s.faktor[b] - s.faktor[a]).map(k => k + ' (' + s.faktor[k] + ')').join(' · ');
+  const sum = s.total
+    ? `<div style="display:flex; gap:20px; flex-wrap:wrap; font-size:13px; margin:8px 0;">
+         <span>Plan <b>${pc(s.plan)}%</b> (${s.plan})</span><span>Eksekusi <b>${pc(s.eksekusi)}%</b> (${s.eksekusi})</span>
+         <span class="subtitle">${s.total} temuan berjenis · ${s.validated} sudah divalidasi</span></div>
+       ${fk ? `<div class="subtitle" style="margin-bottom:6px;">Faktor terbanyak: ${esc(fk)}</div>` : ''}
+       <div style="height:8px; border-radius:4px; background:var(--border); overflow:hidden; display:flex;">
+         <div style="width:${pc(s.plan)}%; background:var(--warn-text);"></div><div style="flex:1; background:var(--primary);"></div></div>`
+    : '<div class="subtitle" style="margin-top:6px;">Belum ada temuan berjenis Plan/Eksekusi di minggu ini.</div>';
+  const items = v.queue.map((q, i) => {
+    const t = q.temuan || {}, ev = t.ev || [];
+    const evH = ev.length ? ev.map(e => `<div style="font-size:12px;"><b>${esc(e.t)}:</b> ${/^https?:[\x2F][\x2F]/i.test(e.v) ? `<a href="${esc(e.v)}" target="_blank" rel="noopener noreferrer">${esc(e.v)}</a>` : esc(e.v)}</div>`).join('')
+      : '<div style="font-size:12px; font-weight:700; color:var(--crit-text);">⚠ Tanpa bukti</div>';
+    const btn = (d, tx, cls) => `<button type="button" class="btn-trend-tab ${cls || ''}" style="height:30px; padding:0 12px; font-size:12px;" onclick="hcv2Decide_(${i},'${d}')">${tx}</button>`;
+    return `<div style="border-top:1px solid var(--border); padding:12px 0; ${ev.length ? '' : 'border-left:3px solid var(--crit-text); padding-left:10px;'}">
+      <div style="font-size:13px;"><b>${esc(q.hub)}</b> · ${esc(q.metric)} <span class="badge kritis" style="font-size:11px;">${esc(t.jenis || 'belum ada jenis')}</span>
+        ${[].concat(t.faktor || []).length ? `<span class="subtitle"> · ${esc([].concat(t.faktor).join(', '))}</span>` : ''}</div>
+      <div style="font-size:12px; margin:4px 0;">${t.desc ? esc(t.desc) : '<span class="subtitle">Belum ada deskripsi kejadian</span>'}</div>
+      <div style="font-size:12px; margin-bottom:2px;">Bukti: <b>${ev.length ? ev.length + ' item' : 'Belum ada'}</b></div>
+      ${evH}
+      <div class="subtitle" style="margin:4px 0 8px;">Diisi ${esc(q.by)} · ${esc(q.at)}</div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">${ev.length ? btn('setuju', 'Setujui', 'active') + btn('ubah', 'Ubah jenis') : btn('bukti', 'Minta bukti', 'active') + btn('ubah', 'Ubah jenis')}</div></div>`;
+  }).join('');
+  box.innerHTML = `<div class="card">
+    <h3 style="font-size:16px; margin:0;">Plan vs Eksekusi — seluruh hub</h3>${sum}
+    <h3 style="font-size:14px; margin:16px 0 0;">Antrean validasi (${v.queue.length})</h3>
+    ${items || '<div class="subtitle" style="margin-top:6px;">Tidak ada yang menunggu validasi.</div>'}</div>`;
+}
+function hcv2Decide_(i, decision) {
+  const q = HCV2.val && HCV2.val.queue[i]; if (!q) return;
+  let note = '';
+  if (decision !== 'setuju') {
+    note = prompt(decision === 'ubah' ? 'Alasan mengubah jenis ke ' + (q.temuan.jenis === 'Plan' ? 'Eksekusi' : 'Plan') + ':' : 'Bukti apa yang diminta?') || '';
+    if (note.trim().length < 5) return toast('Alasan wajib diisi (minimal 5 karakter).', true);
+  }
+  google.script.run
+    .withSuccessHandler(res => {
+      if (!res || !res.success) return toast((res && res.error) || 'Gagal memproses.', true);
+      toast(decision === 'setuju' ? 'Disetujui.' : (decision === 'ubah' ? 'Jenis diubah, dikembalikan ke Hub Lead.' : 'Bukti diminta dari Hub Lead.'));
+      Object.keys(FRONTEND_CACHE).forEach(k => { if (k.startsWith('rekomendasi_')) delete FRONTEND_CACHE[k]; });
+      loadHypercareV2();
+    })
+    .withFailureHandler(e => toast((e && e.message) || 'Gagal memproses.', true))
+    .apiValidateHypercare(q.hub, q.week, q.key, decision, note);
+}
+
+/* Tombol "Simpan dan kirim untuk validasi": periksa kelengkapan, simpan temuan dulu, lalu set status */
+function hcv2Submit_(fid) {
+  const f = document.querySelector('[data-hc][data-fid="' + fid + '"]'), fd = hcv2ReadFinding_(fid);
+  if (!f || !fd) return;
+  if (!fd.q) return toast('Jawab dulu pertanyaan penentu (langkah 3).', true);
+  if (!fd.ev.some(e => e.t && e.v.trim())) return toast('Tambahkan minimal satu bukti (jenis dan isi) di langkah 1.', true);
+  clearTimeout(HCV2_FTIMERS[fid]);
+  google.script.run
+    .withSuccessHandler(res => {
+      if (!res || !res.success) return toast((res && res.error) || 'Gagal menyimpan temuan.', true);
+      const st = document.getElementById('st_' + fid);
+      if (st) { st.value = 'Menunggu validasi'; st.dispatchEvent(new Event('change', { bubbles: true })); }
+      toast('Dikirim untuk validasi.');
+    })
+    .withFailureHandler(e => toast((e && e.message) || 'Gagal menyimpan temuan.', true))
+    .apiSaveHypercareFinding(f.dataset.hub, f.dataset.week, f.dataset.key, fd);
+}
+function renderHypercareV2(d) {
+  renderHypercareV2Base_(d);
+  if (d && d.items && !d.restricted) hcv2LoadVal_(d.mode, d.week);
+}
+
+function hcv2RcHtml_(fid, is) { return hcv2FindingHtml_(fid, is) + hcv2RcCore_(fid, is) + hcv2JenisHtml_(fid, is); }
+
+function hcv2View_(k) {
+  hcv2SyncFromDom_();
+  HCV2.view = k === 'metric' ? 'metric' : 'hub';
+  if (HCV2.last) renderHypercareV2(HCV2.last);
+}
+function hcv2ViewToggle_(cur) {
+  const b = (k, t) => `<button type="button" class="btn-trend-tab ${cur === k ? 'active' : ''}" aria-pressed="${cur === k}" onclick="hcv2View_('${k}')">${t}</button>`;
+  return `<div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px;">${b('hub', 'Per Hub')}${b('metric', 'Fokus per Metrik')}</div>`;
+}
+
+/* Form root cause + action plan + status/target/PIC (autosave lewat [data-hc], sama seperti tampilan Per Hub) */
+function hcv2FormHtml_(hub, group, is) {
+  const fid = `v2_${hub}_${group}_${is.key}`.toLowerCase().replace(/[^a-z0-9]/g, '_');
+  return `
+  <div data-hc data-hub="${esc(hub)}" data-week="${esc(group)}" data-key="${esc(is.key)}" data-fid="${esc(fid)}" style="background:var(--bg); padding:12px; border-radius:8px; border:1px solid var(--border); margin-top:8px;">
+    ${hcv2RcHtml_(fid, is)}
+    <label style="font-size:11px; font-weight:700; color:var(--text-muted);" for="ap_${fid}">ACTION PLAN</label>
+    <textarea id="ap_${fid}" rows="3" placeholder="${esc(is.action)}" style="width:100%; background:var(--card-solid); border:1px solid var(--border); border-radius:6px; padding:8px; font-size:12px; font-family:inherit; resize:vertical; color:var(--text-main); margin:4px 0 10px;">${esc(is.actionPlan)}</textarea>
+    <div class="hc-meta">
+      <select id="st_${fid}">${HCV2_STATUS.map(x => `<option value="${x}" ${(is.status || 'Open') === x ? 'selected' : ''}>${x}</option>`).join('')}</select>
+      <input type="date" id="dd_${fid}" value="${esc(is.dueDate)}" title="Target tanggal">
+      <input class="hc-pic" id="pic_${fid}" placeholder="PIC (nama penanggung jawab)" value="${esc(is.pic)}">
+    </div>
+    <button type="button" class="btn-trend-tab active" style="width:100%; height:34px; margin:8px 0 4px;" onclick="hcv2Submit_('${fid}')">Simpan dan kirim untuk validasi</button>
+    <div class="hc-save" id="sv_${fid}">Tersimpan otomatis saat diubah</div>
+    ${is.updatedBy ? `<div style="font-size:10px; color:var(--text-muted); margin-top:6px; text-align:right;">Diperbarui oleh: <b>${esc(is.updatedBy.split('@')[0])}</b> (${esc(is.updatedAt)})</div>` : ''}
+  </div>`;
+}
+
+/* Rangkum metrik fokus dari seluruh hub Hypercare; tiap hub bisa langsung diisi root cause & action plan */
+function hcv2MetricView_(d) {
+  const f2 = v => (v === null || v === undefined || isNaN(v)) ? '—' : Number(v).toFixed(2);
+  const fw = v => { const n = Number(v); return Number.isInteger(n) ? String(n) : n.toFixed(4).replace(/0+$/, ''); };
+  const dlt = v => {
+    if (v === null || v === undefined || isNaN(v)) return '<span class="subtitle">WoW —</span>';
+    const bad = v < -0.005, good = v > 0.005;
+    return `<span style="font-weight:700; color:${bad ? 'var(--crit-text)' : (good ? 'var(--ok-text)' : 'var(--text-muted)')}">${good ? '▲ +' : (bad ? '▼ ' : '')}${v.toFixed(2)} pt WoW</span>`;
+  };
+  const g = {}; let total = 0;
+  d.items.forEach(h => h.issues.forEach(is => {
+    const o = g[is.key] || (g[is.key] = { key: is.key, label: is.label, weight: is.weight, hubs: [], impact: 0, gap: 0, val: 0 });
+    o.hubs.push({ hub: h.hub, group: h.group, is: is });
+    o.impact += is.impact; o.gap += is.gap; o.val += is.value; total += is.impact;
+  }));
+  const list = Object.keys(g).map(k => g[k]).sort((a, b) => b.impact - a.impact || b.hubs.length - a.hubs.length);
+  if (!list.length) return '<div class="empty-box">Belum ada metrik fokus.</div>';
+  const hc = d.hubCount || 0, nHub = d.items.length;
+  const topTxt = list.slice(0, 3).map(o => '<b>' + esc(o.label) + '</b>').join(', ');
+  let html = `<div class="card" style="margin-bottom:16px;">
+    <h3 style="font-size:16px; margin:0 0 4px;">Fokus perbaikan per metrik</h3>
+    <div class="subtitle">Dari ${nHub} hub Hypercare, ${list.length} metrik jadi fokus. Prioritas utama: ${topTxt}.</div>
+    <div class="subtitle" style="margin-top:4px;">Diurutkan menurut total dampak ke skor (bobot × gap ke cutoff). Root cause &amp; action plan diisi per hub di dalam tiap metrik; data sama dengan tampilan Per Hub dan tersimpan otomatis.</div></div>
+    <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,380px),1fr)); gap:16px; align-items:start;">`;
+  list.forEach((o, i) => {
+    const share = total ? o.impact / total * 100 : 0;
+    const filledN = o.hubs.filter(x => x.is.rootCause || x.is.actionPlan).length;
+    const hubsHtml = o.hubs.slice().sort((a, b) => b.is.impact - a.is.impact).map(x => {
+      const is = x.is, filled = !!(is.rootCause || is.actionPlan);
+      return `<details style="border-top:1px solid var(--border); padding:8px 0;" ${filled ? '' : 'open'}>
+        <summary style="cursor:pointer; font-size:13px;"><b>${esc(x.hub)}</b>
+          <span class="badge kritis" style="font-size:11px; margin-left:6px;">${is.value.toFixed(2)}%</span>
+          <span style="font-size:11px; margin-left:6px; font-weight:700; color:${filled ? 'var(--ok-text)' : 'var(--warn-text)'}">${filled ? esc(is.status || 'Open') : 'Belum diisi'}</span></summary>
+        <div style="font-size:11px; display:flex; gap:10px; flex-wrap:wrap; margin-top:8px;">
+          <span style="color:var(--crit-text); font-weight:600;">Gap -${is.gap.toFixed(2)}</span>
+          <span class="subtitle">Dampak +${is.impact.toFixed(2)} pt</span>${dlt(is.delta)}
+        </div>
+        ${hcv2FormHtml_(x.hub, x.group, is)}
+      </details>`;
+    }).join('');
+    html += `<div class="card" style="padding:0; overflow:hidden; border-left:4px solid var(--crit-text);">
+      <div style="padding:14px 16px; background:var(--bg); border-bottom:1px solid var(--border); display:flex; justify-content:space-between; gap:10px; align-items:flex-start;">
+        <div style="display:flex; gap:10px; align-items:flex-start;">
+          <div style="width:28px; height:28px; border-radius:50%; background:var(--text-main); color:white; display:grid; place-items:center; font-weight:700; font-size:13px; flex-shrink:0;">${i + 1}</div>
+          <div><b style="font-size:14px;">${esc(o.label)}</b><div class="subtitle">${o.hubs.length} dari ${nHub} hub · bobot ${fw(o.weight)} · terisi ${filledN}/${o.hubs.length}</div></div>
+        </div>
+        <div style="text-align:right; flex-shrink:0;"><div class="subtitle">Kontribusi KPI</div><div style="font-size:16px; font-weight:800; color:var(--ok-text);">+${f2(hc ? o.impact / hc : null)} pt</div></div>
+      </div>
+      <div style="padding:14px 16px;">
+        <div style="display:flex; gap:16px; flex-wrap:wrap; font-size:12px; margin-bottom:8px;">
+          <span>Rata-rata <b>${f2(o.val / o.hubs.length)}%</b></span>
+          <span style="color:var(--crit-text); font-weight:600;">Gap rata-rata -${f2(o.gap / o.hubs.length)}</span>
+          <span class="subtitle">${share.toFixed(0)}% dari total dampak</span>
+        </div>
+        <div style="height:6px; border-radius:3px; background:var(--border); overflow:hidden; margin-bottom:6px;"><div style="height:100%; width:${Math.min(100, share).toFixed(0)}%; background:var(--crit-text);"></div></div>
+        ${hubsHtml}
+      </div></div>`;
+  });
+  return html + '</div>';
+}
+
+function hcGoPage_(page) {
+  const b = document.querySelector('#mainNav button[data-page="' + page + '"]');
+  if (b) b.click();
+}
+
+function ensureHcv2Style_() {
+  if (document.getElementById('hcv2Style')) return;
+  const st = document.createElement('style'); st.id = 'hcv2Style';
+  st.textContent =
+    '.hcv2-bar{display:flex; flex-wrap:wrap; align-items:flex-end; gap:12px 14px;}' +
+    '.hcv2-field{display:flex; flex-direction:column; gap:4px;}' +
+    '.hcv2-field>label{font-size:11px; font-weight:700; color:var(--text-muted);}' +
+    '.hcv2-cut,.hcv2-sel{height:36px; box-sizing:border-box; border:1px solid var(--border); border-radius:10px; background:var(--card-solid); color:var(--text-main); font-size:13px; font-family:inherit;}' +
+    '.hcv2-cut{display:flex; align-items:center; gap:6px; padding:0 4px 0 10px;}' +
+    '.hcv2-cut:focus-within,.hcv2-sel:focus{border-color:var(--primary); box-shadow:0 0 0 3px var(--primary-light); outline:none;}' +
+    '.hcv2-cut input{width:64px; border:0; background:transparent; color:inherit; font:inherit; font-weight:800; text-align:right; padding:0; outline:none; -moz-appearance:textfield;}' +
+    '.hcv2-cut input::-webkit-outer-spin-button,.hcv2-cut input::-webkit-inner-spin-button{-webkit-appearance:none; margin:0;}' +
+    '.hcv2-cut span{font-weight:700; color:var(--text-muted);}' +
+    '.hcv2-cut button{height:28px; border:0; border-radius:7px; background:var(--primary); color:var(--on-primary,#fff); font-size:12px; font-weight:700; padding:0 12px; cursor:pointer;}' +
+    '.hcv2-cut button:disabled{opacity:.6; cursor:default;}' +
+    '.hcv2-sel{padding:0 10px; min-width:84px; cursor:pointer;}' +
+    '.hcv2-actions{display:flex; gap:8px; flex-wrap:wrap; margin-left:auto;}' +
+    '.hcv2-actions .btn-trend-tab{height:36px; padding:0 14px; white-space:nowrap;}' +
+    '@media (max-width:640px){.hcv2-bar{width:100%;} .hcv2-actions{margin-left:0; width:100%;}}';
+  document.head.appendChild(st);
+}
+
+function loadHypercareV2() {
+  const week = STATE.week || '';
+  const key = `rekomendasi_v2_${STATE.mode}_${week}_${HCV2.topN}_${HCV2.maxM}`;
+  callApiCached(key, 'apiGetHypercareV2', [STATE.mode, week, HCV2.topN, HCV2.maxM], 'rekomendasihub2', renderHypercareV2);
+}
+
+function hcv2Change_(k, v) { HCV2[k] = parseInt(v, 10); loadHypercareV2(); }
+
+function renderHypercareV2Base_(d) {
+  if (!d || !d.items) return showEmpty('Tidak ada data Hypercare.');
+  HCV2.last = d;
+  ensureHcv2Style_();
+  if (d.cutoff !== undefined && d.cutoff !== null && !isNaN(d.cutoff)) HC_CUTOFF[d.mode] = Number(d.cutoff);   // samakan dengan nilai server
+  const isLead = USER_ACCESS && (USER_ACCESS.role === 'City Lead' || USER_ACCESS.role === 'PIC');
+  const restricted = !!d.restricted;
+  if (restricted && !d.items.length) {
+    const wk = d.week ? 'Minggu ' + d.week : 'minggu terpilih ini';
+    const hubName = (d.userHubs && d.userHubs.length) ? d.userHubs.join(', ') : 'Hub Anda';
+    document.getElementById('pageContent').innerHTML = `
+      <div class="card" style="padding: 40px 20px; text-align: center; max-width: 600px; margin: 20px auto; border-top: 4px solid var(--primary);">
+        <div style="display:flex; justify-content:center; margin-bottom:16px; color:var(--primary);">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        </div>
+        <h3 style="font-size: 18px; font-weight: 800; color: var(--text-main); margin-bottom: 8px;">Akses Terkunci / Performa Aman</h3>
+        <p style="font-size: 13px; color: var(--text-muted); line-height: 1.6; margin-bottom: 20px;">Hub <b>[${esc(hubName)}]</b> tidak termasuk dalam daftar <b>${esc(d.topN)} Hub Prioritas Hypercare</b> pada <b>${esc(wk)}</b>.</p>
+        <div style="background: var(--ok-bg); color: var(--ok-text); padding: 12px 16px; border-radius: 10px; font-size: 12px; font-weight: 600; line-height:1.6;">
+  Performa minggu ini berada dalam kondisi baik &amp; aman.
+</div>
+<p style="font-size: 13px; color: var(--text-muted); line-height: 1.6; margin-top: 16px;">
+  Tetap cek <b>Ringkasan</b> untuk melihat skor hub Anda, lalu perbaiki metrik yang masih di bawah target lewat <b>Prioritas Perbaikan</b>.
+</p>
+<div style="display:flex; gap:8px; justify-content:center; flex-wrap:wrap; margin-top:8px;">
+  <button type="button" class="btn-trend-tab active" onclick="hcGoPage_('ringkasan')">Buka Ringkasan</button>
+  <button type="button" class="btn-trend-tab" onclick="hcGoPage_('bottomprioritas')">Buka Prioritas Perbaikan</button>
+</div>
+      </div>`;
+    setUpdated(); return;
+  }
+  const f2 = v => (v === null || v === undefined || isNaN(v)) ? '—' : Number(v).toFixed(2);
+  const opt = (arr, cur) => arr.map(x => `<option value="${x}" ${x === cur ? 'selected' : ''}>${x}</option>`).join('');
+  const dlt = v => {
+    if (v === null || v === undefined || isNaN(v)) return '<span class="subtitle">WoW —</span>';
+    const bad = v < -0.005, good = v > 0.005;
+    return `<span style="font-weight:700; color:${bad ? 'var(--crit-text)' : (good ? 'var(--ok-text)' : 'var(--text-muted)')}">${good ? '▲ +' : (bad ? '▼ ' : '')}${v.toFixed(2)} pt WoW</span>`;
+  };
+
+  const wl = d.weights || [], unm = wl.filter(w => !w.matched);
+  const fw = v => { const n = Number(v); return Number.isInteger(n) ? String(n) : n.toFixed(4).replace(/0+$/, ''); };
+  const wBlock = (unm.length ? `<div style="margin-top:10px; padding:10px 12px; border-radius:8px; background:var(--warn-bg); color:var(--warn-text); font-size:12px;"><b>${unm.length} metrik memakai bobot bawaan 1</b> karena tidak ditemukan di sheet "Matriks &amp; Bobot": ${unm.map(w => esc(w.key)).join(', ')}. Samakan kode/nama metrik di sheet dengan dashboard agar ranking akurat.</div>` : '') +
+    (wl.length ? `<details style="margin-top:10px; font-size:12px;"><summary style="cursor:pointer; font-weight:700;">Bobot metrik yang dipakai (${wl.length})</summary>
+      <div style="overflow-x:auto; margin-top:8px"><table style="width:100%; border-collapse:collapse; font-size:12px;"><thead><tr><th style="text-align:left; padding:4px 8px;">Metrik</th><th style="text-align:right; padding:4px 8px;">Bobot</th><th style="text-align:left; padding:4px 8px;">Sumber</th></tr></thead><tbody>
+      ${wl.map(w => `<tr style="border-top:1px solid var(--border)"><td style="padding:4px 8px;">${esc(w.label)}</td><td style="padding:4px 8px; text-align:right; font-weight:700;">${fw(w.weight)}</td><td style="padding:4px 8px; color:${w.matched ? 'var(--text-muted)' : 'var(--warn-text)'}">${esc(w.source)}</td></tr>`).join('')}
+      </tbody></table></div></details>` : '');
+
+  let html = `
+    <div class="card" style="margin-bottom:16px;">
+      <div style="display:flex; flex-wrap:wrap; gap:16px; align-items:flex-start; justify-content:space-between;">
+        <div>
+          <h3 style="margin-bottom:4px; font-size:16px;">Hypercare · ${esc(d.mode)} — ditentukan otomatis</h3>
+          <div class="subtitle">Periode: <b>${esc(d.week)}</b>${d.prevWeek ? ' (pembanding: ' + esc(d.prevWeek) + ')' : ''} · Cutoff: <b>${f2(d.cutoff)}%</b>${restricted ? '' : ' · ' + d.hubsBelowCutoff + ' dari ' + d.hubCount + ' hub punya metrik di bawah cutoff'}</div>
+          ${d.weekFallback ? '<div class="subtitle" style="color:var(--warn-text); margin-top:4px;">Minggu terpilih belum ada datanya, ditampilkan minggu terbaru.</div>' : ''}
+          <div class="subtitle" style="margin-top:6px;">Urutan = potensi kenaikan skor terbesar (bobot metrik × gap ke cutoff).</div>
+        </div>
+        ${isLead ? `<div class="hcv2-bar">
+          <div class="hcv2-field">
+            <label for="uiCutoffInput">Target cutoff ${esc(d.mode)}</label>
+            <div class="hcv2-cut">
+              <input type="number" id="uiCutoffInput" value="${Number(d.cutoff)}" step="0.01" min="0" max="100" inputmode="decimal">
+              <span>%</span>
+              <button type="button" onclick="updateHypercareCutoffFromUI(document.getElementById('uiCutoffInput').value, this)">Terapkan</button>
+            </div>
+          </div>
+          <div class="hcv2-field">
+            <label for="hcv2TopN">Jumlah hub</label>
+            <select id="hcv2TopN" class="hcv2-sel" onchange="hcv2Change_('topN', this.value)">${opt([5, 8, 10, 12, 15, 20], d.topN)}</select>
+          </div>
+          <div class="hcv2-field">
+            <label for="hcv2MaxM">Metrik per hub</label>
+            <select id="hcv2MaxM" class="hcv2-sel" onchange="hcv2Change_('maxM', this.value)">${opt([1, 2, 3, 4, 5], d.maxMetrics)}</select>
+          </div>
+          <div class="hcv2-actions">
+            ${d.items.length ? '<button type="button" class="btn-trend-tab active" onclick="openHypercareBlast(this)">Blast &amp; Google Meet</button>' : ''}
+            ${d.items.length ? '<button type="button" class="btn-trend-tab" onclick="openMigoo(this)">Analisis di Migoo</button>' : ''}
+            ${d.items.length ? '<button type="button" class="btn-trend-tab" id="hcv2AiAllBtn" onclick="hcv2AiAll_(this)">✨ Rekomendasi semua root cause</button>' : ''}
+            <button type="button" class="btn-trend-tab" onclick="openCheckpoint(this)">Checkpoint Jumat</button>
+          </div>
+        </div>` : ''}
+      </div>
+      ${restricted ? '' : `<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-top:14px;">
+        <div><div class="subtitle">Skor rata-rata saat ini</div><div style="font-size:22px; font-weight:800;">${f2(d.currentAvg)}%</div></div>
+        <div><div class="subtitle">Potensi kenaikan KPI</div><div style="font-size:22px; font-weight:800; color:var(--ok-text);">+${f2(d.totalGain)} pt</div></div>
+        <div><div class="subtitle">Proyeksi bila tuntas</div><div style="font-size:22px; font-weight:800;">${f2(d.projectedAvg)}%</div></div>
+      </div>
+      <div class="subtitle" style="font-size:11px; margin-top:8px;">Proyeksi adalah estimasi dari bobot di sheet "Matriks &amp; Bobot"; skor resmi tetap dari sheet.</div>
+      ${wBlock}`}
+    </div>`;
+
+  if (!d.items.length) {
+    document.getElementById('pageContent').innerHTML = html + '<div class="empty-box" style="background:var(--ok-bg); color:var(--ok-text);">Seluruh metrik sudah mencapai cutoff. Tidak ada hub yang perlu di-Hypercare.</div>';
+    setUpdated(); return;
+  }
+
+  const view = restricted ? 'hub' : HCV2.view;
+  if (!restricted) html += hcv2ViewToggle_(view);
+  if (view === 'metric') { document.getElementById('pageContent').innerHTML = html + hcv2MetricView_(d); setUpdated(); return; }
+  html += '<div style="display:flex; flex-direction:column; gap:16px">';
+  d.items.forEach((h, idx) => {
+    html += `
+      <div class="card" style="border-left:4px solid var(--crit-text); padding:0; overflow:hidden;">
+        <div style="padding:16px; background:var(--bg); border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
+          <div style="display:flex; align-items:center; gap:12px;">
+            <div style="width:32px; height:32px; border-radius:50%; background:var(--text-main); color:white; display:grid; place-items:center; font-weight:700; font-size:14px;">${idx + 1}</div>
+            <div>
+              <h4 style="font-size:16px; color:var(--text-main); margin-bottom:2px;">${esc(h.hub)}</h4>
+              <div class="subtitle">${h.belowCount} metrik di bawah cutoff · fokus ${h.issues.length} metrik berdampak terbesar</div>
+            </div>
+          </div>
+          <div style="display:flex; gap:24px; text-align:right;">
+            <div><div class="subtitle">Skor hub</div><div style="font-size:18px; font-weight:800;">${h.score !== null ? h.score.toFixed(2) + '%' : '—'}</div></div>
+            <div><div class="subtitle">Potensi hub</div><div style="font-size:18px; font-weight:800; color:var(--ok-text);">+${h.gain.toFixed(2)} pt</div></div>
+          </div>
+        </div>
+        <div style="padding:16px; display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:16px;">
+          ${h.issues.map(is => {
+            const fid = `v2_${h.hub}_${h.group}_${is.key}`.toLowerCase().replace(/[^a-z0-9]/g, '_');
+            return `
+            <div data-hc data-hub="${esc(h.hub)}" data-week="${esc(h.group)}" data-key="${esc(is.key)}" data-fid="${esc(fid)}" style="background:var(--card); border:1px solid var(--border); border-radius:12px; padding:14px;">
+              <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:6px; gap:8px;">
+                <b style="font-size:13px; color:var(--text-main)">${esc(is.label)}</b>
+                <span class="badge kritis" style="font-size:11px; white-space:nowrap;">${is.value.toFixed(2)}%</span>
+              </div>
+              <div style="font-size:11px; display:flex; gap:10px; flex-wrap:wrap; margin-bottom:10px;">
+                <span style="color:var(--crit-text); font-weight:600;">Gap -${is.gap.toFixed(2)}</span>
+                <span class="subtitle">Bobot ${fw(is.weight)} (${is.weightPct.toFixed(1)}% skor)</span>
+                <span class="subtitle">Dampak +${is.impact.toFixed(2)} pt</span>
+                ${dlt(is.delta)}
+              </div>
+              <div style="background:var(--bg); padding:12px; border-radius:8px; border:1px solid var(--border);">
+                ${hcv2RcHtml_(fid, is)}
+                <label style="font-size:11px; font-weight:700; color:var(--text-muted);" for="ap_${fid}">ACTION PLAN</label>
+                <textarea id="ap_${fid}" rows="3" placeholder="${esc(is.action)}" style="width:100%; background:var(--card-solid); border:1px solid var(--border); border-radius:6px; padding:8px; font-size:12px; font-family:inherit; resize:vertical; color:var(--text-main); margin:4px 0 10px;">${esc(is.actionPlan)}</textarea>
+                <div class="hc-meta">
+                  <select id="st_${fid}">${HCV2_STATUS.map(s => `<option value="${s}" ${is.status === s ? 'selected' : ''}>${s}</option>`).join('')}</select>
+                  <input type="date" id="dd_${fid}" value="${esc(is.dueDate)}" title="Target tanggal">
+                  <input class="hc-pic" id="pic_${fid}" placeholder="PIC (nama penanggung jawab)" value="${esc(is.pic)}">
+                </div>
+                <button type="button" class="btn-trend-tab active" style="width:100%; height:34px; margin:8px 0 4px;" onclick="hcv2Submit_('${fid}')">Simpan dan kirim untuk validasi</button>
+    <div class="hc-save" id="sv_${fid}">Tersimpan otomatis saat diubah</div>
+                ${is.updatedBy ? `<div style="font-size:10px; color:var(--text-muted); margin-top:6px; text-align:right;">Diperbarui oleh: <b>${esc(is.updatedBy.split('@')[0])}</b> (${esc(is.updatedAt)})</div>` : ''}
+              </div>
+            </div>`;
+          }).join('')}
+        </div>
+      </div>`;
+  });
+  html += '</div>';
+  document.getElementById('pageContent').innerHTML = html;
+  setUpdated();
+}
+</script>

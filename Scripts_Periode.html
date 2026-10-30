@@ -1,0 +1,126 @@
+<script>
+/* ─── UI PATCH v2: pemilih periode tunggal (default = minggu terbaru) ─── */
+const PERIOD = { gran: 'week' };
+let PERIOD_BOUND = false;
+
+function periodLatestWeek_() {
+  const o = FILTER_OPTIONS || {};
+  const weeks = o.weeks || [];
+  const norm = x => String(x == null ? '' : x).trim();
+  if (o.latestWeek) {
+    const hit = weeks.find(w => norm(w.value) === norm(o.latestWeek));
+    if (hit) return hit.value;
+  }
+  const dates = o.dates || [];
+  for (let i = dates.length - 1; i >= 0; i--) {
+    const hit = weeks.find(w => norm(w.value) === norm(dates[i].week));
+    if (hit) return hit.value;
+  }
+  return null;
+}
+
+function syncLegacyPeriod_() {
+  const ms = document.getElementById('monthFilter');
+  if (ms) ms.value = Array.from(ms.options).some(o => o.value === STATE.month) ? STATE.month : '';
+  populateWeekFilter(); populateDateFilter();
+}
+
+function initPeriodPicker(fromUrl) {
+  if (!fromUrl) {
+    const lw = periodLatestWeek_();
+    if (lw) {
+      const w = (FILTER_OPTIONS.weeks || []).find(x => x.value === lw);
+      STATE.week = lw; STATE.date = '';
+      STATE.month = (w && w.month) || STATE.month || '';
+    }
+  }
+  PERIOD.gran = STATE.date ? 'date' : (STATE.week ? 'week' : 'month');
+  if (!PERIOD_BOUND) {
+    PERIOD_BOUND = true;
+    document.querySelectorAll('#periodSeg button').forEach(b => b.addEventListener('click', () => switchPeriodGran_(b.dataset.gran)));
+    document.getElementById('periodSelect').addEventListener('change', e => setPeriod(PERIOD.gran, e.target.value));
+  }
+  syncLegacyPeriod_();
+  renderPeriodUI();
+}
+
+function setPeriod(gran, v) {
+  const o = FILTER_OPTIONS || {};
+  PERIOD.gran = gran;
+  STATE.month = ''; STATE.week = ''; STATE.date = '';
+  if (gran === 'month') {
+    STATE.month = v;
+  } else if (gran === 'week') {
+    STATE.week = v;
+    const w = (o.weeks || []).find(x => x.value === v);
+    if (w && w.month) STATE.month = w.month;
+  } else {
+    STATE.date = v;
+    const d = (o.dates || []).find(x => x.value === v);
+    if (d) { STATE.month = d.month || ''; STATE.week = d.week || ''; }
+  }
+  syncLegacyPeriod_();
+  renderPeriodUI();
+  renderPage();
+}
+
+function switchPeriodGran_(g) {
+  const o = FILTER_OPTIONS || {};
+  const norm = x => String(x == null ? '' : x).trim();
+  let v = '';
+  if (g === 'week') {
+    v = STATE.week || '';
+    if (!v && STATE.date) { const d = (o.dates || []).find(x => x.value === STATE.date); v = d ? d.week : ''; }
+    if (!v) v = periodLatestWeek_() || '';
+  } else if (g === 'month') {
+    v = STATE.month || ((o.months || [])[0] || '');
+  } else {
+    v = STATE.date || '';
+    if (!v) {
+      const pool = (o.dates || []).filter(d => (!STATE.week || norm(d.week) === norm(STATE.week)) && (!STATE.month || d.month === STATE.month));
+      v = pool.length ? pool[pool.length - 1].value : '';
+    }
+  }
+  setPeriod(g, v);
+}
+
+function renderPeriodUI() {
+  const sel = document.getElementById('periodSelect'); if (!sel) return;
+  const o = FILTER_OPTIONS || {};
+  const g = PERIOD.gran;
+  document.querySelectorAll('#periodSeg button').forEach(b => {
+    const on = b.dataset.gran === g;
+    b.classList.toggle('active', on); b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+  const norm = x => String(x == null ? '' : x).trim();
+  const frag = document.createDocumentFragment();
+  const add = (parent, value, text) => { const op = document.createElement('option'); op.value = value; op.textContent = text; parent.appendChild(op); };
+  const group = label => { const og = document.createElement('optgroup'); og.label = label; frag.appendChild(og); return og; };
+  add(frag, '', 'Semua periode');
+
+  if (g === 'month') {
+    (o.months || []).forEach(m => add(frag, m, formatMonthLabel(m)));
+  } else if (g === 'week') {
+    const latest = periodLatestWeek_();
+    const maxDate = {};
+    (o.dates || []).forEach(d => { const w = norm(d.week); if (w && (!maxDate[w] || d.value > maxDate[w])) maxDate[w] = d.value; });
+    const byMonth = {};
+    (o.weeks || []).forEach(w => { const k = w.month || ''; (byMonth[k] = byMonth[k] || []).push(w); });
+    Object.keys(byMonth).sort().reverse().forEach(k => {
+      const og = group(k ? formatMonthLabel(k) : 'Lainnya');
+      byMonth[k].sort((a, b) => (maxDate[norm(b.value)] || '').localeCompare(maxDate[norm(a.value)] || ''))
+        .forEach(w => add(og, w.value, w.value + (latest !== null && w.value === latest ? ' · terbaru' : '')));
+    });
+  } else {
+    const byMonth = {};
+    (o.dates || []).forEach(d => { const k = d.month || ''; (byMonth[k] = byMonth[k] || []).push(d); });
+    Object.keys(byMonth).sort().reverse().forEach(k => {
+      const og = group(k ? formatMonthLabel(k) : 'Lainnya');
+      byMonth[k].slice().sort((a, b) => b.value.localeCompare(a.value)).forEach(d => add(og, d.value, d.value));
+    });
+  }
+  sel.innerHTML = ''; sel.appendChild(frag);
+  const cur = STATE[g] || '';
+  sel.value = Array.from(sel.options).some(op => op.value === cur) ? cur : '';
+}
+</script>

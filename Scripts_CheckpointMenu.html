@@ -1,0 +1,221 @@
+<script>
+const CKP = { data: null, key: '', seq: 0, timers: {}, opener: null, keyHandler: null };
+
+function loadCheckpoint() {
+  const key = STATE.mode + '|' + (STATE.week || '');
+  const seq = ++CKP.seq, t0 = performance.now();
+  let shown = false;
+  if (CKP.data && CKP.key === key) { renderCheckpoint(CKP.data); shown = true; }
+  google.script.run
+    .withSuccessHandler(res => {
+      if (seq !== CKP.seq || STATE.page !== 'checkpoint') return;
+      if (!res || !res.success) { if (!shown) showError(res ? res.error : 'Response kosong'); return; }
+      const ae = document.activeElement, pc = document.getElementById('pageContent');
+      if (shown && ae && pc && pc.contains(ae) && ['TEXTAREA', 'INPUT', 'SELECT'].indexOf(ae.tagName) >= 0) return;
+      CKP.key = key;
+      const tr = performance.now();
+      res.data.clientTiming = { totalMs: Math.round(tr - t0) };
+      renderCheckpoint(res.data);
+      res.data.clientTiming.renderMs = Math.round(performance.now() - tr);
+      ckpShowTiming_(res.data);
+    })
+    .withFailureHandler(e => { if (seq === CKP.seq && !shown) showError(e); })
+    .apiGetCheckpointBoard(STATE.mode, STATE.week || '');
+}
+
+function ckpShowTiming_(d) {
+  if (!window.JTT_DEBUG) return;   // info waktu muat hanya untuk developer: set window.JTT_DEBUG = true di console
+  const t = d.timing, c = d.clientTiming; if (!t || !c) return;
+  console.log('[Checkpoint] total ' + c.totalMs + ' ms \u00b7 server ' + t.serverMs + ' ms \u00b7 tampil ' + c.renderMs + ' ms', t);
+  const host = document.querySelector('#pageContent .card .subtitle'); if (!host) return;
+  const el = document.createElement('div'); el.className = 'subtitle'; el.style.cssText = 'font-size:10px; margin-top:4px;';
+  el.textContent = 'Waktu muat: total ' + c.totalMs + ' ms (server ' + t.serverMs + ' ms \u00b7 ' + (t.fromCache ? 'angka dari cache' : 'angka dihitung ' + t.computeMs + ' ms, baca data mingguan ' + t.readMs + ' ms') + ' \u00b7 tampil ' + c.renderMs + ' ms)';
+  host.insertAdjacentElement('afterend', el);
+}
+function ckpF_(v, sign) {
+  if (v === null || v === undefined || isNaN(v)) return '\u2014';
+  return (sign && v > 0 ? '+' : '') + Number(v).toFixed(2);
+}
+function ckpDelta_(v) {
+  if (v === null || v === undefined || isNaN(v)) return '<span class="subtitle">\u2014</span>';
+  const good = v > 0.005, bad = v < -0.005;
+  return '<span style="font-weight:700; color:' + (bad ? 'var(--crit-text)' : (good ? 'var(--ok-text)' : 'var(--text-muted)')) + '">' + (good ? '\u25b2 ' : (bad ? '\u25bc ' : '')) + ckpF_(v, true) + ' pt</span>';
+}
+
+function renderCheckpoint(d) {
+  CKP.data = d;
+  const s = d.summary;
+  let html = `
+    <div class="card" style="margin-bottom:16px;">
+      <div style="display:flex; flex-wrap:wrap; gap:16px; justify-content:space-between; align-items:flex-start;">
+        <div>
+          <h3 style="margin-bottom:4px; font-size:16px;">Checkpoint Hypercare \u00b7 ${esc(d.mode)}</h3>
+          <div class="subtitle">Acuan: <b>${esc(d.planTitle || d.baseWeek)}</b> \u00b7 baseline minggu <b>${esc(d.baseWeek)}</b> \u2192 progress minggu <b>${esc(d.curWeek)}</b> \u00b7 target <b>${Number(d.cutoff).toFixed(2)}%</b></div>
+          ${d.sameWeek ? '<div class="subtitle" style="color:var(--warn-text); margin-top:4px;">Minggu progress sama dengan baseline, belum ada pembanding. Pilih minggu yang lebih baru di filter periode.</div>' : ''}
+        </div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <button type="button" class="btn-trend-tab" onclick="openCheckpoint(this)">Checkpoint Jumat</button>
+          <button type="button" class="btn-trend-tab active" onclick="openNotulen(this)">Buat Notulen</button>
+        </div>
+      </div>
+      <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-top:14px;">
+        <div><div class="subtitle">Skor rata-rata hub</div><div style="font-size:20px; font-weight:800;">${ckpF_(s.avgBase)}% \u2192 ${ckpF_(s.avgCur)}%</div>${ckpDelta_(s.avgDelta)}</div>
+        <div><div class="subtitle">Metrik mencapai target</div><div style="font-size:20px; font-weight:800;">${s.reached} / ${s.total}</div></div>
+        <div><div class="subtitle">Membaik / memburuk</div><div style="font-size:20px; font-weight:800;"><span style="color:var(--ok-text)">${s.improved}</span> / <span style="color:var(--crit-text)">${s.worsened}</span></div></div>
+      </div>
+    </div>
+    <div style="display:flex; flex-direction:column; gap:16px">`;
+
+  d.items.forEach((h, i) => {
+    html += `
+      <div class="card" style="padding:0; overflow:hidden;">
+        <div style="padding:14px 16px; background:var(--bg); border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+          <h4 style="font-size:16px; margin:0;">${esc(h.hub)}</h4>
+          <div style="text-align:right"><span class="subtitle">Skor hub</span> <b>${ckpF_(h.scoreBase)}% \u2192 ${ckpF_(h.scoreCur)}%</b> ${ckpDelta_(h.scoreDelta)}</div>
+        </div>
+        <div style="padding:16px; display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:16px;">
+          ${h.metrics.map((mt, j) => {
+            const fid = 'ck_' + i + '_' + j;
+            const fld = 'width:100%; background:var(--card-solid); border:1px solid var(--border); border-radius:6px; padding:8px; font-size:12px; font-family:inherit; color:var(--text-main);';
+            return `
+            <div data-ck data-i="${i}" data-j="${j}" style="background:var(--card); border:1px solid var(--border); border-radius:12px; padding:14px;">
+              <div style="display:flex; justify-content:space-between; gap:8px; margin-bottom:6px;">
+                <b style="font-size:13px;">${esc(mt.label)}</b>
+                <span class="badge ${mt.reached ? 'tercapai' : 'kritis'}" style="white-space:nowrap;">${mt.reached ? 'Tercapai' : 'Belum'}</span>
+              </div>
+              <div style="font-size:12px; margin-bottom:10px;">${ckpF_(mt.base)}% \u2192 <b>${ckpF_(mt.cur)}%</b> \u00b7 ${ckpDelta_(mt.delta)}</div>
+              <label style="font-size:11px; font-weight:700; color:var(--text-muted);" for="kd_${fid}">KENDALA</label>
+              <textarea id="kd_${fid}" rows="2" placeholder="Kendala di hub\u2026" style="${fld} resize:vertical; margin:4px 0 8px;">${esc(mt.kendala)}</textarea>
+              <label style="font-size:11px; font-weight:700; color:var(--text-muted);" for="sp_${fid}">NEED SUPPORT</label>
+              <textarea id="sp_${fid}" rows="2" placeholder="Dukungan yang dibutuhkan\u2026" style="${fld} resize:vertical; margin:4px 0 8px;">${esc(mt.support)}</textarea>
+              <div class="hc-meta">
+                <input class="hc-pic" id="pc_${fid}" placeholder="PIC (penanggung jawab)" value="${esc(mt.pic)}">
+                <select id="stt_${fid}">${['Open', 'In progress', 'Done'].map(x => `<option value="${x}" ${mt.status === x ? 'selected' : ''}>${x}</option>`).join('')}</select>
+              </div>
+              <div class="hc-save" id="svc_${fid}">Tersimpan otomatis saat diubah</div>
+              ${mt.updatedBy ? `<div style="font-size:10px; color:var(--text-muted); text-align:right;">Diperbarui: <b>${esc(String(mt.updatedBy).split('@')[0])}</b> (${esc(mt.updatedAt)})</div>` : ''}
+            </div>`;
+          }).join('')}
+        </div>
+      </div>`;
+  });
+  html += '</div>';
+  document.getElementById('pageContent').innerHTML = html;
+  setUpdated();
+}
+
+function ckpVal_(p, fid) { const el = document.getElementById(p + '_' + fid); return el ? el.value : ''; }
+function ckpAuto(i, j) {
+  const fid = 'ck_' + i + '_' + j, d = CKP.data; if (!d) return;
+  const h = d.items[i], mt = h.metrics[j];
+  clearTimeout(CKP.timers[fid]);
+  const sv = document.getElementById('svc_' + fid); if (sv) sv.textContent = 'Menyimpan\u2026';
+  CKP.timers[fid] = setTimeout(() => {
+    mt.kendala = ckpVal_('kd', fid); mt.support = ckpVal_('sp', fid); mt.pic = ckpVal_('pc', fid); mt.status = ckpVal_('stt', fid) || 'Open';
+    google.script.run
+      .withSuccessHandler(res => {
+        if (res && res.success) { if (sv) sv.textContent = 'Tersimpan ' + new Date().toLocaleTimeString('id-ID'); }
+        else { if (sv) sv.textContent = 'Gagal menyimpan'; toast(res ? res.error : 'Gagal menyimpan.', true); }
+      })
+      .withFailureHandler(e => { if (sv) sv.textContent = 'Gagal menyimpan'; toast((e && e.message) || 'Gagal menyimpan.', true); })
+      .apiSaveCheckpointNote(d.planId, h.hub, mt.key, mt.kendala, mt.support, mt.pic, mt.status);
+  }, 900);
+}
+
+function ckpBuildNotulen_() {
+  const d = CKP.data, s = d.summary, L = [];
+  const f = ckpF_, sg = v => (v === null || v === undefined || isNaN(v)) ? '\u2014' : (v > 0 ? '+' : '') + Number(v).toFixed(2);
+  const today = new Date(), p = n => String(n).padStart(2, '0');
+  L.push('*NOTULEN CHECKPOINT HYPERCARE ' + d.mode + ' \u00b7 JTT-07*');
+  L.push('Hari/tanggal: ' + hcbDateLabel_(today.getFullYear() + '-' + p(today.getMonth() + 1) + '-' + p(today.getDate())));
+  L.push('Acuan: ' + (d.planTitle || d.baseWeek));
+  L.push('Progress: minggu ' + d.baseWeek + ' \u2192 ' + d.curWeek);
+  L.push('Skor rata-rata hub Hypercare: ' + f(s.avgBase) + '% \u2192 ' + f(s.avgCur) + '% (' + sg(s.avgDelta) + ' pt)');
+  L.push('Metrik mencapai target ' + Number(d.cutoff).toFixed(2) + '%: ' + s.reached + ' dari ' + s.total + ' \u00b7 membaik ' + s.improved + ' \u00b7 memburuk ' + s.worsened);
+  L.push('');
+  const supports = [];
+  d.items.forEach((h, i) => {
+    L.push((i + 1) + '. *' + h.hub + '* \u2014 skor ' + f(h.scoreBase) + '% \u2192 ' + f(h.scoreCur) + '% (' + sg(h.scoreDelta) + ' pt)');
+    h.metrics.forEach((mt, j) => {
+      const fid = 'ck_' + i + '_' + j;
+      const g = (p, fb) => { const el = document.getElementById(p + '_' + fid); return el ? el.value : fb; };
+      const kd = String(g('kd', mt.kendala)).trim(), sp = String(g('sp', mt.support)).trim(), pc = String(g('pc', mt.pic)).trim(), st = g('stt', mt.status) || 'Open';
+      L.push('   \u2022 ' + mt.label + ': ' + f(mt.base) + '% \u2192 ' + f(mt.cur) + '% (' + sg(mt.delta) + ' pt) \u2014 ' + (mt.reached ? 'TERCAPAI' : 'BELUM'));
+      if (kd) L.push('     Kendala: ' + kd);
+      if (sp) { L.push('     Need support: ' + sp); supports.push({ hub: h.hub, label: mt.label, sp: sp, pc: pc, st: st }); }
+      if (pc || kd || sp) L.push('     PIC: ' + (pc || '\u2014') + ' \u00b7 Status: ' + st);
+    });
+  });
+  L.push('');
+  L.push('*Rekap need support & tindak lanjut*');
+  if (!supports.length) L.push('Tidak ada need support yang dicatat.');
+  supports.forEach((x, k) => L.push((k + 1) + '. ' + x.hub + ' \u2014 ' + x.label + ': ' + x.sp + ' (PIC: ' + (x.pc || '\u2014') + ', ' + x.st + ')'));
+  return L.join('\n');
+}
+
+function ckpWaUrl_(text) {
+  const slash = String.fromCharCode(47);
+  return 'https:' + slash + slash + 'wa.me' + slash + '?text=' + encodeURIComponent(text);
+}
+function openNotulen(opener) {
+  if (!CKP.data) return;
+  CKP.opener = opener || document.activeElement;
+  closeNotulen(true);
+  const ov = document.createElement('div'); ov.className = 'rpt-overlay'; ov.id = 'cknOverlay';
+  ov.innerHTML =
+    '<div class="rpt-dialog" role="dialog" aria-modal="true" aria-labelledby="cknTtl">' +
+      '<div class="rpt-head"><h2 id="cknTtl">Notulen Checkpoint</h2><button type="button" class="btn-icon" id="cknClose" aria-label="Tutup">' + ICON.x + '</button></div>' +
+      '<div class="rpt-body" style="background:var(--card-solid)"><label for="cknText" class="sr-only">Isi notulen</label>' +
+        '<textarea id="cknText" rows="20" style="width:100%; background:var(--card-solid); color:var(--text-main); border:1px solid var(--border); border-radius:6px; padding:10px; font-size:12px; resize:vertical; font-family:ui-monospace,Menlo,Consolas,monospace;"></textarea>' +
+        '<div class="subtitle" style="margin-top:6px">Teks boleh diedit sebelum disalin. Catatan yang baru diketik diambil apa adanya dari layar.</div></div>' +
+      '<div class="rpt-actions">' +
+        '<button type="button" class="btn-trend-tab" id="cknCopy">' + ICON.clipboard + ' Salin</button>' +
+        '<button type="button" class="btn-trend-tab" id="cknWa">Buka WhatsApp</button>' +
+        '<button type="button" class="btn-trend-tab active" id="cknSave">Simpan ke sheet</button>' +
+      '</div></div>';
+  document.body.appendChild(ov); document.body.classList.add('rpt-open');
+  const ta = document.getElementById('cknText'); ta.value = ckpBuildNotulen_();
+  document.getElementById('cknClose').addEventListener('click', () => closeNotulen());
+  ov.addEventListener('click', e => { if (e.target === ov) closeNotulen(); });
+  document.getElementById('cknCopy').addEventListener('click', () => copyText(ta.value, 'Notulen disalin'));
+  document.getElementById('cknWa').addEventListener('click', () => window.open(ckpWaUrl_(ta.value), '_blank', 'noopener'));
+  document.getElementById('cknSave').addEventListener('click', () => {
+    const b = document.getElementById('cknSave'), lb = b.textContent; b.disabled = true; b.textContent = 'Menyimpan\u2026';
+    const done = () => { b.disabled = false; b.textContent = lb; };
+    google.script.run
+      .withSuccessHandler(r => { done(); if (r && r.success) toast('Berhasil: notulen disimpan di sheet Checkpoint_Notulen'); else toast('Gagal: ' + (r ? r.error : 'respons kosong'), true); })
+      .withFailureHandler(e => { done(); toast('Gagal: ' + ((e && e.message) || 'kesalahan jaringan'), true); })
+      .apiSaveNotulen(CKP.data.planId, CKP.data.curWeek, ta.value);
+  });
+  const dlg = ov.querySelector('.rpt-dialog');
+  CKP.keyHandler = e => {
+    if (e.key === 'Escape') { e.preventDefault(); closeNotulen(); return; }
+    if (e.key !== 'Tab') return;
+    const f = Array.from(dlg.querySelectorAll('button,textarea')).filter(b => !b.disabled);
+    if (!f.length) return;
+    const first = f[0], last = f[f.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  };
+  document.addEventListener('keydown', CKP.keyHandler);
+  ta.focus();
+}
+function closeNotulen(silent) {
+  const ov = document.getElementById('cknOverlay'); if (ov) ov.remove();
+  document.body.classList.remove('rpt-open');
+  if (CKP.keyHandler) { document.removeEventListener('keydown', CKP.keyHandler); CKP.keyHandler = null; }
+  if (!silent && CKP.opener && document.body.contains(CKP.opener) && CKP.opener.focus) CKP.opener.focus();
+}
+
+/* Autosave catatan checkpoint via event delegation */
+(function () {
+  const root = document.getElementById('pageContent'); if (!root) return;
+  const handler = e => {
+    const f = e.target.closest && e.target.closest('[data-ck]');
+    if (!f || !/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
+    ckpAuto(Number(f.dataset.i), Number(f.dataset.j));
+  };
+  root.addEventListener('input', handler);
+  root.addEventListener('change', handler);
+})();
+</script>

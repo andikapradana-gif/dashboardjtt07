@@ -1,0 +1,75 @@
+<script>
+/* ═══ API WRAPPER — satu pintu panggilan google.script.run untuk halaman ═══
+   - Respons dibuang bila pengguna sudah pindah halaman atau ada request yang lebih baru untuk halaman yang sama.
+   - Permintaan identik yang masih berjalan TIDAK dikirim dua kali (renderPage sering terpanggil beruntun saat filter/periode berubah).
+   - Error saat menampilkan data ditangkap → skeleton tidak lagi macet selamanya.
+   - Bila server belum menjawab setelah 8 detik, muncul keterangan "masih memuat". */
+const API_SEQ = {}, API_INFLIGHT = {};
+function callApi(fnName, args, page, render, onError) {
+  const sig = page + '|' + fnName + '|' + JSON.stringify(args);
+  if (API_INFLIGHT[sig] !== undefined && API_INFLIGHT[sig] === API_SEQ[page]) return;   // identik & masih terbaru → tunggu saja
+  const seq = (API_SEQ[page] = (API_SEQ[page] || 0) + 1);
+  API_INFLIGHT[sig] = seq;
+  const stale = () => seq !== API_SEQ[page] || STATE.page !== page;
+  const fin = () => { if (API_INFLIGHT[sig] === seq) delete API_INFLIGHT[sig]; clearTimeout(slow); };
+  const fail = msg => { if (onError) onError(msg); else showError(msg); };
+  const slow = setTimeout(() => {
+    if (stale()) return;
+    const pc = document.getElementById('pageContent');
+    if (pc && pc.querySelector('.skeleton') && !pc.querySelector('.slow-hint')) {
+      pc.insertAdjacentHTML('afterbegin', '<div class="slow-hint subtitle" style="padding:8px 4px;">Masih memuat data dari server… (pemuatan pertama bisa lebih lama)</div>');
+    }
+  }, 8000);
+  const runner = google.script.run
+    .withSuccessHandler(res => {
+      fin();
+      if (stale()) return;
+      try {
+        if (!res) return fail('Response kosong');
+        if (!res.success) return fail(res.error);
+        render(res.data);
+      } catch (err) {
+        console.error(err);
+        fail('Gagal menampilkan data: ' + (err && err.message ? err.message : err));
+      }
+    })
+    .withFailureHandler(e => { fin(); if (!stale()) fail(e && e.message ? e.message : e); });
+  runner[fnName].apply(runner, args);
+}
+
+/* Sama seperti callApi, tetapi memakai FRONTEND_CACHE.
+   Saat cache kena, nomor urut dinaikkan agar request lama yang masih berjalan tidak menimpa tampilan ini. */
+function callApiCached(key, fnName, args, page, render, onError) {
+  const hit = cacheGet(key);
+  if (hit) {
+    API_SEQ[page] = (API_SEQ[page] || 0) + 1;
+    try { render(hit); } catch (err) { console.error(err); (onError || showError)('Gagal menampilkan data: ' + (err && err.message ? err.message : err)); }
+    return;
+  }
+  callApi(fnName, args, page, data => { cacheSet(key, data); render(data); }, onError);
+}
+
+/* Jaring pengaman: error JavaScript yang tidak tertangkap dicatat sejak halaman dimuat (termasuk SyntaxError
+   di file script lain, mis. "Identifier 'X' has already been declared"), lalu ditampilkan di layar bila halaman masih skeleton. */
+const LOAD_ERRORS = [];
+(function () {
+  function record(msg) { if (LOAD_ERRORS.indexOf(msg) < 0) LOAD_ERRORS.push(msg); return msg; }
+  function surface(msg) {
+    try {
+      record(msg);
+      const pc = document.getElementById('pageContent');
+      if (pc && pc.querySelector('.skeleton')) {
+        const others = LOAD_ERRORS.filter(m => m !== msg);
+        showError('Error skrip: ' + msg + (others.length ? '  ||  Error lain yang tercatat sejak halaman dimuat: ' + others.join('  ||  ') : ''));
+      }
+    } catch (e) {}
+  }
+  window.addEventListener('error', function (ev) {
+    const f = String(ev.filename || '').split('/').pop();
+    surface((ev.message || 'tidak diketahui') + (ev.lineno ? ' (baris ' + ev.lineno + (f ? ', ' + f : '') + ')' : ''));
+  });
+  window.addEventListener('unhandledrejection', function (ev) {
+    surface((ev.reason && ev.reason.message) ? ev.reason.message : String(ev.reason));
+  });
+})();
+</script>
