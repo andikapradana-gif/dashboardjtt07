@@ -1,6 +1,6 @@
 /************************************************************
  * HYPERCAREBLAST.GS — Guest, Google Meet & log rencana Hypercare
- * Hanya City Lead / PIC.
+ * Hanya City Lead / PIC. Guest undangan = Hub Lead (per hub terpilih) + semua City Lead & PIC.
  * PERLU: Services → tambahkan "Google Calendar API" (Advanced Service, id: Calendar)
  *        dan scope https://www.googleapis.com/auth/calendar di appsscript.json.
  ************************************************************/
@@ -10,19 +10,23 @@ const HC_TZ = 'Asia/Jakarta';
 
 /* Undangan Meet hanya ke Hub Lead: kolom Role (C) di sheet Access Web harus mengandung "Hub Lead" */
 const HC_GUEST_ROLE_RE = /hub\s*lead/i;
+/* City Lead & PIC (akses \"Semua\" hub) selalu ikut sebagai guest, tanpa filter hub */
+const HC_LEAD_ROLE_RE = /^\s*(city\s*lead|pic)\s*$/i;
 
 function hcIsEmail_(s) { return /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/.test(String(s || '')); }
 function hcSafeCell_(v) { const s = String(v == null ? '' : v); return /^[=+\-@]/.test(s) ? "'" + s : s; }
 
-/* Email Hub Lead (dari sheet Access Web) untuk daftar hub tertentu */
+/* Email guest dari sheet Access Web: Hub Lead per hub terpilih + semua City Lead/PIC */
 function hcGuestsForHubs_(mode, hubs) {
   const data = getAccessRows_() || [];
   const targets = hubs.map(cleanHubName);
-  const guests = {}, covered = {};
+  const guests = {}, covered = {}, leads = {};
   for (let i = 1; i < data.length; i++) {
     const email = String(data[i][1] || '').toLowerCase().trim();
     if (!hcIsEmail_(email)) continue;
-    if (!HC_GUEST_ROLE_RE.test(String(data[i][2] || ''))) continue;   // lewati City Lead, PIC, dan role lain
+    const role = String(data[i][2] || '');
+    if (HC_LEAD_ROLE_RE.test(role)) { leads[email] = role.trim(); continue; }   // CL/PIC: selalu diundang
+    if (!HC_GUEST_ROLE_RE.test(role)) continue;                                  // lewati role lain
     const list = mode === 'LM' ? [data[i][4], data[i][5]] : String(data[i][3] || '').split(',');
     list.map(s => String(s || '').trim()).filter(s => s && s !== '-' && s.toLowerCase() !== 'null').forEach(h => {
       const c = cleanHubName(h);
@@ -31,6 +35,7 @@ function hcGuestsForHubs_(mode, hubs) {
   }
   return {
     guests: Object.keys(guests).sort().map(e => ({ email: e, hubs: guests[e] })),
+    leads: Object.keys(leads).sort().map(e => ({ email: e, role: leads[e] })),
     missingHubs: hubs.filter(h => !covered[cleanHubName(h)])
   };
 }
@@ -43,7 +48,7 @@ function apiGetHypercareGuests(mode, week, topN, maxMetrics) {
   if (!r || !r.success) return r || fail('Gagal memuat Hypercare v2.');
   const hubs = r.data.items.map(h => h.hub);
   const g = hcGuestsForHubs_(m, hubs);
-  return ok({ hubs: hubs, guests: g.guests, missingHubs: g.missingHubs, organizer: Session.getActiveUser().getEmail() || '' });
+  return ok({ hubs: hubs, guests: g.guests, leads: g.leads, missingHubs: g.missingHubs, organizer: Session.getActiveUser().getEmail() || '' });
 }
 
 function hcLogPlan_(row) {

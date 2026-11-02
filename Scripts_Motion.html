@@ -1,0 +1,47 @@
+<script>
+/* ═══ MOTION — animasi perpindahan halaman ═══
+   Web Animations API (tanpa pustaka, tanpa CDN, sama seperti animasi landing).
+   Mati otomatis bila perangkat memakai "kurangi gerakan" (prefers-reduced-motion). */
+(function () {
+  const EASE = 'cubic-bezier(.22,1,.36,1)';
+  const reduce = () => !!(window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches);
+  const pc = document.getElementById('pageContent');
+  const dash = document.getElementById('dashboardPage');
+
+  /* 1) Isi halaman: kartu/blok masuk bergantian (naik sedikit + muncul). Skeleton loading dilewati. */
+  function targets() {
+    const out = [];
+    Array.from(pc.children).forEach(c => {
+      if (c.classList && c.classList.contains('summary-cards-grid')) Array.prototype.push.apply(out, c.children);
+      else out.push(c);
+    });
+    return out.slice(0, 14);
+  }
+  function playPage() {
+    if (reduce() || !pc.animate) return;
+    if (pc.querySelector('.skeleton-card, .skeleton-container')) return;
+    targets().forEach((el, i) => {
+      el.animate(
+        [{ opacity: 0, transform: 'translateY(12px)' }, { opacity: 1, transform: 'none' }],
+        { duration: 380, delay: i * 55, easing: EASE, fill: 'backwards' }
+      );
+    });
+  }
+  if (pc) {
+    let t = null;
+    new MutationObserver(() => { clearTimeout(t); t = setTimeout(playPage, 30); }).observe(pc, { childList: true });
+  }
+
+  /* 2) Landing → dashboard: dashboard muncul pelan (opacity saja, agar elemen sticky/fixed tidak loncat) */
+  if (dash) {
+    let wasHidden = dash.classList.contains('view-hidden');
+    new MutationObserver(() => {
+      const hidden = dash.classList.contains('view-hidden');
+      if (wasHidden && !hidden && !reduce() && dash.animate) {
+        dash.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 420, easing: EASE });
+      }
+      wasHidden = hidden;
+    }).observe(dash, { attributes: true, attributeFilter: ['class'] });
+  }
+})();
+</script>

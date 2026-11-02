@@ -105,9 +105,12 @@ function openHypercareBlast(opener) {
       const ta = document.getElementById('hcbGuests'); if (!ta) return;
       if (!res || !res.success) { ta.placeholder = 'Isi email guest manual'; toast('Gagal memuat guest: ' + (res ? res.error : 'respons kosong'), true); return; }
       HCB.guestsInfo = res.data;
-      ta.value = res.data.guests.map(g => g.email).join('\n');
+      const hubEmails = res.data.guests.map(g => g.email);
+      const leadEmails = (res.data.leads || []).map(l => l.email);
+      const allEmails = Array.from(new Set(hubEmails.concat(leadEmails)));
+      ta.value = allEmails.join('\n');
       const note = document.getElementById('hcbGuestNote');
-      note.textContent = res.data.guests.length + ' email Hub Lead dari hub terpilih' +
+      note.textContent = hubEmails.length + ' email Hub Lead dari hub terpilih + ' + leadEmails.length + ' City Lead/PIC' +
         (res.data.missingHubs.length ? ' · belum ada email untuk: ' + res.data.missingHubs.join(', ') : '') +
         ' · penyelenggara: ' + (res.data.organizer || 'akun Anda') + ' (otomatis)';
     })

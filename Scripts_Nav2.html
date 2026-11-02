@@ -15,11 +15,13 @@
   .mainnav-wrapper > .mainnav{display:none}
   .nav2{pointer-events:auto;background:rgba(255,255,255,.75);-webkit-backdrop-filter:blur(20px);backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,.5);border-radius:16px;box-shadow:0 8px 32px rgba(0,0,0,.05);overflow:hidden;transition:background .3s,border-color .3s}
   body.dark-mode .nav2{background:rgba(28,28,30,.75);border-color:rgba(255,255,255,.1)}
-  .nav2-tabs{display:flex;gap:2px;padding:0 8px;border-bottom:1px solid var(--border)}
+  .nav2-tabs{position:relative;padding:0 8px;border-bottom:1px solid var(--border)}
+  .nav2-tabs-in{display:flex;gap:2px}
+  .nav2-ind{position:absolute;left:0;bottom:-1px;width:0;height:3px;border-radius:3px 3px 0 0;background:var(--primary);transition:left .38s cubic-bezier(.22,1,.36,1),width .38s cubic-bezier(.22,1,.36,1)}
   .nav2-tab{display:flex;align-items:center;justify-content:center;gap:8px;flex:1 1 0;min-width:0;padding:13px 10px 11px;border:none;border-bottom:3px solid transparent;border-radius:0;background:transparent;color:var(--text-muted);font:inherit;font-size:13.5px;font-weight:600;cursor:pointer;white-space:nowrap;transition:color .2s,border-color .2s}
   .nav2-tab svg{width:18px;height:18px;flex-shrink:0}
   .nav2-tab:hover{color:var(--text-main)}
-  .nav2-tab.active{color:var(--primary);border-bottom-color:var(--primary);font-weight:700}
+  .nav2-tab.active{color:var(--primary);font-weight:700}
   .nav2-sub{display:flex;gap:6px;padding:10px 12px;overflow-x:auto;scrollbar-width:none}
   .nav2-sub::-webkit-scrollbar{display:none}
   .nav2-sub[hidden]{display:none}
@@ -29,7 +31,7 @@
   .nav2-tab:focus-visible,.nav2-pill:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
 }
 @media (max-width:768px){.nav2{display:none}}
-@media (prefers-reduced-motion:reduce){.nav2-tab,.nav2-pill,.nav2{transition:none}}`;
+@media (prefers-reduced-motion:reduce){.nav2-tab,.nav2-pill,.nav2,.nav2-ind{transition:none}}`;
     document.head.appendChild(st);
   }
 
@@ -48,9 +50,12 @@
 
   const root = document.createElement('div');
   root.className = 'nav2'; root.id = 'nav2';
-  root.innerHTML = '<div class="nav2-tabs" id="nav2Tabs" role="group" aria-label="Menu utama"></div><div class="nav2-sub" id="nav2Sub" role="group" aria-label="Sub-menu"></div>';
+  root.innerHTML = '<div class="nav2-tabs" id="nav2Tabs" role="group" aria-label="Menu utama"><div class="nav2-tabs-in" id="nav2TabsIn"></div><span class="nav2-ind" id="nav2Ind" aria-hidden="true"></span></div><div class="nav2-sub" id="nav2Sub" role="group" aria-label="Sub-menu"></div>';
   wrap.insertBefore(root, nav);
-  const tabsEl = root.querySelector('#nav2Tabs'), subEl = root.querySelector('#nav2Sub');
+  const tabsEl = root.querySelector('#nav2Tabs'), tabsIn = root.querySelector('#nav2TabsIn'), indEl = root.querySelector('#nav2Ind'), subEl = root.querySelector('#nav2Sub');
+  const placeInd = () => { const a = tabsIn.querySelector('.nav2-tab.active'); if (!a) return; indEl.style.left = a.offsetLeft + 'px'; indEl.style.width = a.offsetWidth + 'px'; };
+  window.addEventListener('resize', placeInd);
+  if (window.ResizeObserver) new ResizeObserver(placeInd).observe(tabsIn); /* dashboard baru tampil / ukuran berubah */
 
   /* Grup dari #mainNav: grup tanpa label = tombol langsung (Ringkasan) */
   const groups = () => Array.from(nav.querySelectorAll('.nav-group')).map(g => {
@@ -71,12 +76,13 @@
     if (!gs.some(g => g.name === selected)) selected = (activeGroup || gs[0]).name;
     const sel = gs.find(g => g.name === selected);
 
-    tabsEl.innerHTML = gs.map(g => {
+    tabsIn.innerHTML = gs.map(g => {
       const on = g.name === selected;
       return '<button type="button" class="nav2-tab' + (on ? ' active' : '') + '" data-g="' + esc(g.name) + '"' + (on ? ' aria-current="true"' : '') + '>' +
         (g.direct ? IC.grid : IC[ICON_BY_LABEL[g.name] || 'report']) + '<span>' + esc(g.name) + '</span></button>';
     }).join('');
 
+    placeInd();
     if (sel.direct) { subEl.hidden = true; subEl.innerHTML = ''; return; }
     subEl.hidden = false;
     subEl.innerHTML = sel.visBtns.map(b => {
